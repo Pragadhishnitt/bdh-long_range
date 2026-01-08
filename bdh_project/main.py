@@ -253,9 +253,15 @@ def run_calibration(
     desc = "Validating" if is_validation else "Calibrating"
     pbar = tqdm(examples, desc=desc)
     
+    import gc
+    
     for i, example in enumerate(pbar):
         try:
             book_name = example['book_name']
+            
+            # Explicit logging for Kaggle (since tqdm might be buffered)
+            if i % 5 == 0:
+                print(f"Processing example {i+1}/{len(train_examples)}: {book_name}...", flush=True)
             
             # Choose processing mode
             if mode == "streaming":
@@ -268,6 +274,11 @@ def run_calibration(
                     max_chunks=args.max_chunks if args.dry_run else None,
                 )
                 velocity = metrics.max_velocity
+                
+                # Force cleanup after heavy streaming
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
             else:
                 # Cached approach: compare final states
                 if book_name not in novel_states:
