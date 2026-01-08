@@ -16,6 +16,7 @@ import argparse
 import json
 import os
 import sys
+import pickle
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -24,6 +25,7 @@ import pandas as pd
 import numpy as np
 import torch
 from tqdm import tqdm
+from sklearn.model_selection import train_test_split
 
 # Add project to path
 PROJECT_ROOT = Path(__file__).parent
@@ -160,78 +162,144 @@ def load_checkpoint(path: Path) -> CalibrationResult:
     return calibration
 
 
-def run_calibration(
+def precompute_novel_states(
     wrapper: BDHReasoningWrapper,
     loader: DataLoader,
     paths: Dict[str, Path],
+) -> Dict[str, any]:
+    """Pre-compute novel states once to avoid redundant processing."""
+    cache_path = paths["checkpoints"] / "novel_states.pkl"
+    
+    # Check if cache exists
+    if cache_path.exists():
+        print(f"\n✓ Loading cached novel states from {cache_path}")
+        with open(cache_path, 'rb') as f:
+            return pickle.load(f)
+    
+    print("\n" + "="*60)
+    print("PHASE 0: PRE-COMPUTING NOVEL STATES (ONE-TIME)")
+    print("="*60)
+    
+    novel_states = {}
+    
+    for book_name in loader.book_mapping.keys():
+        print(f"\nProcessing: {book_name}")
+        novel_path = loader.get_book_path(book_name)
+        
+        # Compute novel state
+        novel_state = wrapper.compute_novel_state(novel_path, verbose=True)
+        novel_states[book_name] = novel_state
+        
+        print(f"✓ Cached state for {book_name}")
+    
+    # Save cache
+    with open(cache_path, 'wb') as f:
+        pickle.dump(novel_states, f)
+    
+    print(f"\n✓ Saved novel states to {cache_path}")
+    return novel_states
+
+
+def run_calibration(
+    wrapper: BDHReasoningWrapper,
+    loader: DataLoader,
+    novel_states: Dict[str, any],
+    paths: Dict[str, Path],
     args: argparse.Namespace,
     config_name: str,
+    is_validation: bool = False,
 ) -> CalibrationResult:
-    """Run calibration on training set."""
+    """Run calibration on training set using cached novel states."""
+    phase_name = "VALIDATION" if is_validation else "CALIBRATION"
     print("\n" + "="*60)
-    print("PHASE 1: CALIBRATION")
+    print(f"PHASE {'2' if is_validation else '1'}: {phase_name}")
     print("="*60)
     
     train_examples = loader.get_train_examples()
     
-    if args.limit:
-        train_examples = train_examples[:args.limit]
+    # Split into train (60) and validation (20)
+    if not args.dry_run and not args.limit:
+        train_split, val_split = train_test_split(
+            train_examples, 
+            train_size=60, 
+            test_size=20,
+            random_state=42,
+            stratify=[ex['label_binary'] for ex in train_examples]
+        )
+        examples = val_split if is_validation else train_split
+    else:
+        # Use all for dry-run or limited mode
+        examples = train_examples[:args.limit] if args.limit else train_examples
     
     calibration = CalibrationResult()
     
-    # Process each training example
-    pbar = tqdm(train_examples, desc="Calibrating")
+    # Process each example
+    desc = "Validating" if is_validation else "Calibrating"
+    pbar = tqdm(examples, desc=desc)
     
     for i, example in enumerate(pbar):
         try:
-            # Get novel path
-            novel_path = loader.get_book_path(example['book_name'])
+            book_name = example['book_name']
             
-            # Process example
-            metrics = wrapper.process_example(
-                backstory=example['content'],
-                novel_path=novel_path,
+            # Get cached novel state
+            if book_name not in novel_states:
+                print(f"\n⚠ Novel state not cached for {book_name}, skipping")
+                continue
+            
+            novel_state = novel_states[book_name]
+            
+            # Process only the backstory (fast!)
+            backstory_state, _ = wrapper.prime_with_backstory(
+                example['content'],
                 verbose=False,
-                max_chunks=args.max_chunks if args.dry_run else None,
+            )
+            
+            # Compute velocity against cached novel state
+            velocity = wrapper.compute_velocity_from_states(
+                backstory_state,
+                novel_state,
             )
             
             # Record result
             calibration.add_example(
                 example_id=example['id'],
-                max_velocity=metrics.max_velocity,
+                max_velocity=velocity,
                 label=example['label_binary'],
             )
             
             # Update progress bar
             pbar.set_postfix({
-                "max_vel": f"{metrics.max_velocity:.4f}",
+                "vel": f"{velocity:.4f}",
                 "label": "C" if example['label_binary'] == 1 else "X",
             })
             
-            # Periodic checkpoint
-            if (i + 1) % 10 == 0:
+            # Periodic checkpoint (only during training)
+            if not is_validation and (i + 1) % 10 == 0:
                 checkpoint_path = paths["checkpoints"] / f"calibration_partial_{i+1}.json"
-                calibration.compute_optimal_threshold()  # Compute interim threshold
+                calibration.compute_optimal_threshold()
                 save_checkpoint(calibration, checkpoint_path, config_name)
                 
         except Exception as e:
             print(f"\n⚠ Error processing example {example['id']}: {e}")
+            import traceback
+            traceback.print_exc()
             continue
     
     # Compute final threshold
     threshold = calibration.compute_optimal_threshold()
     
     print(f"\n{'─'*40}")
-    print("CALIBRATION RESULTS:")
+    print(f"{phase_name} RESULTS:")
     print(f"  Optimal threshold: {threshold:.6f}")
-    print(f"  Train accuracy: {calibration.train_accuracy:.2%}")
+    print(f"  Accuracy: {calibration.train_accuracy:.2%}")
     print(f"  Consistent μ={calibration.consistent_mean:.4f}, σ={calibration.consistent_std:.4f}")
     print(f"  Contradict μ={calibration.contradict_mean:.4f}, σ={calibration.contradict_std:.4f}")
     print(f"{'─'*40}")
     
-    # Save final checkpoint
-    checkpoint_path = paths["checkpoints"] / "calibration_final.json"
-    save_checkpoint(calibration, checkpoint_path, config_name)
+    # Save final checkpoint (only during training)
+    if not is_validation:
+        checkpoint_path = paths["checkpoints"] / "calibration_final.json"
+        save_checkpoint(calibration, checkpoint_path, config_name)
     
     return calibration
 
@@ -239,13 +307,14 @@ def run_calibration(
 def run_inference(
     wrapper: BDHReasoningWrapper,
     loader: DataLoader,
+    novel_states: Dict[str, any],
     calibration: CalibrationResult,
     paths: Dict[str, Path],
     args: argparse.Namespace,
 ) -> pd.DataFrame:
-    """Run inference on test set."""
+    """Run inference on test set using cached novel states."""
     print("\n" + "="*60)
-    print("PHASE 2: TEST INFERENCE")
+    print("PHASE 3: TEST INFERENCE")
     print("="*60)
     
     test_examples = loader.get_test_examples()
@@ -260,34 +329,47 @@ def run_inference(
     
     for example in pbar:
         try:
-            # Get novel path
-            novel_path = loader.get_book_path(example['book_name'])
+            book_name = example['book_name']
             
-            # Process example
-            metrics = wrapper.process_example(
-                backstory=example['content'],
-                novel_path=novel_path,
-                verbose=False,
-                max_chunks=args.max_chunks if args.dry_run else None,
-            )
-            
-            # Predict
-            prediction = calibration.predict(metrics.max_velocity)
+            # Get cached novel state
+            if book_name not in novel_states:
+                print(f"\n⚠ Novel state not cached for {book_name}, using default")
+                prediction = 1  # Default to consistent
+                velocity = 0.0
+            else:
+                novel_state = novel_states[book_name]
+                
+                # Process only the backstory
+                backstory_state, _ = wrapper.prime_with_backstory(
+                    example['content'],
+                    verbose=False,
+                )
+                
+                # Compute velocity
+                velocity = wrapper.compute_velocity_from_states(
+                    backstory_state,
+                    novel_state,
+                )
+                
+                # Predict
+                prediction = calibration.predict(velocity)
             
             results.append({
                 "id": example['id'],
                 "prediction": prediction,
-                "max_velocity": metrics.max_velocity,
-                "mean_velocity": metrics.mean_velocity,
+                "max_velocity": velocity,
+                "mean_velocity": velocity,  # Same for cached approach
             })
             
             pbar.set_postfix({
                 "pred": prediction,
-                "max_vel": f"{metrics.max_velocity:.4f}",
+                "vel": f"{velocity:.4f}",
             })
             
         except Exception as e:
             print(f"\n⚠ Error processing example {example['id']}: {e}")
+            import traceback
+            traceback.print_exc()
             # Default prediction for errors
             results.append({
                 "id": example['id'],
@@ -443,22 +525,40 @@ def main():
     run_train = not args.inference
     run_infer = not args.train
     
-    calibration = None
+    # Phase 0: Pre-compute novel states (if needed)
+    novel_states = precompute_novel_states(wrapper, loader, paths)
     
-    # Phase 1: Calibration
+    calibration = None
+    validation_result = None
+    
+    # Phase 1: Calibration (60 examples)
     if run_train:
         calibration = run_calibration(
             wrapper=wrapper,
             loader=loader,
+            novel_states=novel_states,
             paths=paths,
             args=args,
             config_name=config_name,
+            is_validation=False,
         )
+        
+        # Phase 2: Validation (20 examples)
+        if not args.dry_run and not args.limit:
+            validation_result = run_calibration(
+                wrapper=wrapper,
+                loader=loader,
+                novel_states=novel_states,
+                paths=paths,
+                args=args,
+                config_name=config_name,
+                is_validation=True,
+            )
         
         # Generate plots
         generate_plots(calibration, paths)
     
-    # Phase 2: Inference
+    # Phase 3: Test Inference (60 examples)
     if run_infer:
         # Load checkpoint if inference-only
         if calibration is None:
@@ -478,6 +578,7 @@ def main():
         results = run_inference(
             wrapper=wrapper,
             loader=loader,
+            novel_states=novel_states,
             calibration=calibration,
             paths=paths,
             args=args,

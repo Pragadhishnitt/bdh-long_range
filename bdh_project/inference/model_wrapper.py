@@ -135,7 +135,72 @@ class BDHReasoningWrapper:
         return state, metrics
     
     @torch.no_grad()
-    def scan_novel(
+    def compute_novel_state(
+        self,
+        novel_path: Path,
+        verbose: bool = True,
+    ) -> RecurrentState:
+        """
+        Compute the final state after reading an entire novel.
+        This is cached to avoid re-processing novels for each example.
+        
+        Args:
+            novel_path: Path to novel text file
+            verbose: Show progress bar
+            
+        Returns:
+            final_state: Final ρ-matrix state after reading entire novel
+        """
+        # Load and tokenize novel
+        with open(novel_path, 'r', encoding='utf-8', errors='replace') as f:
+            novel_text = f.read()
+        
+        tokens = self._tokenize(novel_text)
+        chunks = self._chunk_tokens(tokens)
+        
+        state = self.model.reset_state()
+        
+        desc = f"Computing novel state: {novel_path.name[:30]}..."
+        chunk_iter = tqdm(chunks, desc=desc, leave=False) if verbose else chunks
+        
+        with self.amp_context:
+            for chunk_idx, chunk in enumerate(chunk_iter):
+                _, state, _ = self.model(
+                    chunk,
+                    state=state,
+                    return_state=True,
+                    return_rho_update=False,  # Don't need updates for caching
+                )
+                
+                # Memory management: detach state periodically
+                if chunk_idx % 10 == 0:
+                    state.detach()
+        
+        return state
+    
+    @torch.no_grad()
+    def compute_velocity_from_states(
+        self,
+        backstory_state: RecurrentState,
+        novel_state: RecurrentState,
+    ) -> float:
+        """
+        Compute velocity between backstory and novel states.
+        
+        Args:
+            backstory_state: Final state after reading backstory
+            novel_state: Pre-computed novel state
+            
+        Returns:
+            velocity: L2 norm of state difference
+        """
+        if (backstory_state is None or backstory_state.rho_matrix is None or
+            novel_state is None or novel_state.rho_matrix is None):
+            return 0.0
+        
+        diff = novel_state.rho_matrix - backstory_state.rho_matrix
+        return float(diff.norm(p=2).item())
+
         self,
         novel_path: Path,
         initial_state: RecurrentState,
