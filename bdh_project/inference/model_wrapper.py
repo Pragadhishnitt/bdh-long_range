@@ -169,7 +169,7 @@ class BDHReasoningWrapper:
                     chunk,
                     state=state,
                     return_state=True,
-                    return_rho_update=False,  # Don't need updates for caching
+                    return_rho_update=True,  # MUST be True to populate rho_matrix
                 )
                 
                 # Memory management: detach state periodically

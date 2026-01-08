@@ -82,6 +82,11 @@ Examples:
     
     # Pipeline options
     parser.add_argument(
+        "--mode", type=str, default="cached",
+        choices=["cached", "streaming"],
+        help="Processing mode: 'cached' (fast, default) or 'streaming' (slow, accurate)"
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="Quick test run without full processing"
     )
@@ -207,6 +212,7 @@ def run_calibration(
     paths: Dict[str, Path],
     args: argparse.Namespace,
     config_name: str,
+    mode: str = "cached",
     is_validation: bool = False,
 ) -> CalibrationResult:
     """Run calibration on training set using cached novel states."""
@@ -241,24 +247,36 @@ def run_calibration(
         try:
             book_name = example['book_name']
             
-            # Get cached novel state
-            if book_name not in novel_states:
-                print(f"\n⚠ Novel state not cached for {book_name}, skipping")
-                continue
-            
-            novel_state = novel_states[book_name]
-            
-            # Process only the backstory (fast!)
-            backstory_state, _ = wrapper.prime_with_backstory(
-                example['content'],
-                verbose=False,
-            )
-            
-            # Compute velocity against cached novel state
-            velocity = wrapper.compute_velocity_from_states(
-                backstory_state,
-                novel_state,
-            )
+            # Choose processing mode
+            if mode == "streaming":
+                # Original approach: stream the full novel
+                novel_path = loader.get_book_path(book_name)
+                metrics = wrapper.process_example(
+                    backstory=example['content'],
+                    novel_path=novel_path,
+                    verbose=False,
+                    max_chunks=args.max_chunks if args.dry_run else None,
+                )
+                velocity = metrics.max_velocity
+            else:
+                # Cached approach: compare final states
+                if book_name not in novel_states:
+                    print(f"\n⚠ Novel state not cached for {book_name}, skipping")
+                    continue
+                
+                novel_state = novel_states[book_name]
+                
+                # Process only the backstory (fast!)
+                backstory_state, _ = wrapper.prime_with_backstory(
+                    example['content'],
+                    verbose=False,
+                )
+                
+                # Compute velocity against cached novel state
+                velocity = wrapper.compute_velocity_from_states(
+                    backstory_state,
+                    novel_state,
+                )
             
             # Record result
             calibration.add_example(
@@ -311,6 +329,7 @@ def run_inference(
     calibration: CalibrationResult,
     paths: Dict[str, Path],
     args: argparse.Namespace,
+    mode: str = "cached",
 ) -> pd.DataFrame:
     """Run inference on test set using cached novel states."""
     print("\n" + "="*60)
@@ -331,28 +350,41 @@ def run_inference(
         try:
             book_name = example['book_name']
             
-            # Get cached novel state
-            if book_name not in novel_states:
-                print(f"\n⚠ Novel state not cached for {book_name}, using default")
-                prediction = 1  # Default to consistent
-                velocity = 0.0
-            else:
-                novel_state = novel_states[book_name]
-                
-                # Process only the backstory
-                backstory_state, _ = wrapper.prime_with_backstory(
-                    example['content'],
+            # Choose processing mode
+            if mode == "streaming":
+                # Original approach: stream the full novel
+                novel_path = loader.get_book_path(book_name)
+                metrics = wrapper.process_example(
+                    backstory=example['content'],
+                    novel_path=novel_path,
                     verbose=False,
+                    max_chunks=args.max_chunks if args.dry_run else None,
                 )
-                
-                # Compute velocity
-                velocity = wrapper.compute_velocity_from_states(
-                    backstory_state,
-                    novel_state,
-                )
-                
-                # Predict
+                velocity = metrics.max_velocity
                 prediction = calibration.predict(velocity)
+            else:
+                # Cached approach: compare final states
+                if book_name not in novel_states:
+                    print(f"\n⚠ Novel state not cached for {book_name}, using default")
+                    prediction = 1  # Default to consistent
+                    velocity = 0.0
+                else:
+                    novel_state = novel_states[book_name]
+                    
+                    # Process only the backstory
+                    backstory_state, _ = wrapper.prime_with_backstory(
+                        example['content'],
+                        verbose=False,
+                    )
+                    
+                    # Compute velocity
+                    velocity = wrapper.compute_velocity_from_states(
+                        backstory_state,
+                        novel_state,
+                    )
+                    
+                    # Predict
+                    prediction = calibration.predict(velocity)
             
             results.append({
                 "id": example['id'],
@@ -524,9 +556,18 @@ def main():
     # Determine mode
     run_train = not args.inference
     run_infer = not args.train
+    mode = args.mode
     
-    # Phase 0: Pre-compute novel states (if needed)
-    novel_states = precompute_novel_states(wrapper, loader, paths)
+    print(f"\nProcessing Mode: {mode.upper()}")
+    if mode == "streaming":
+        print("  ⚠ Streaming mode: Slow but captures temporal dynamics")
+    else:
+        print("  ✓ Cached mode: Fast with pre-computed novel states")
+    
+    # Phase 0: Pre-compute novel states (only for cached mode)
+    novel_states = {}
+    if mode == "cached":
+        novel_states = precompute_novel_states(wrapper, loader, paths)
     
     calibration = None
     validation_result = None
@@ -540,6 +581,7 @@ def main():
             paths=paths,
             args=args,
             config_name=config_name,
+            mode=mode,
             is_validation=False,
         )
         
@@ -552,6 +594,7 @@ def main():
                 paths=paths,
                 args=args,
                 config_name=config_name,
+                mode=mode,
                 is_validation=True,
             )
         
@@ -582,6 +625,7 @@ def main():
             calibration=calibration,
             paths=paths,
             args=args,
+            mode=mode,
         )
     
     print("\n" + "="*60)
