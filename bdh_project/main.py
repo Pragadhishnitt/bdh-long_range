@@ -92,6 +92,10 @@ Examples:
         help="Distance metric: 'cosine' (normalized, recommended) or 'l2' (magnitude-sensitive)"
     )
     parser.add_argument(
+        "--perturbation", action="store_true",
+        help="Use perturbation measurement (slower, compares baseline vs primed novel)"
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="Quick test run without full processing"
     )
@@ -272,18 +276,29 @@ def run_calibration(
                 
                 novel_state = novel_states[book_name]
                 
-                # Process only the backstory (fast!)
-                backstory_state, _ = wrapper.prime_with_backstory(
-                    example['content'],
-                    verbose=False,
-                )
-                
-                # Compute velocity against cached novel state
-                velocity = wrapper.compute_velocity_from_states(
-                    backstory_state,
-                    novel_state,
-                    metric=metric,
-                )
+                if args.perturbation:
+                    # Perturbation mode: measure how much backstory changes novel
+                    novel_path = loader.get_book_path(book_name)
+                    velocity = wrapper.compute_perturbation(
+                        backstory_text=example['content'],
+                        novel_path=novel_path,
+                        verbose=False,
+                        metric=metric,
+                    )
+                else:
+                    # Standard cached mode: compare final states
+                    # Process only the backstory (fast!)
+                    backstory_state, _ = wrapper.prime_with_backstory(
+                        example['content'],
+                        verbose=False,
+                    )
+                    
+                    # Compute velocity against cached novel state
+                    velocity = wrapper.compute_velocity_from_states(
+                        backstory_state,
+                        novel_state,
+                        metric=metric,
+                    )
             
             # Record result
             calibration.add_example(
@@ -379,6 +394,17 @@ def run_inference(
                 else:
                     novel_state = novel_states[book_name]
                     
+                if args.perturbation:
+                    # Perturbation mode
+                    novel_path = loader.get_book_path(book_name)
+                    velocity = wrapper.compute_perturbation(
+                        backstory_text=example['content'],
+                        novel_path=novel_path,
+                        verbose=False,
+                        metric=metric,
+                    )
+                else:
+                    # Standard cached mode
                     # Process only the backstory
                     backstory_state, _ = wrapper.prime_with_backstory(
                         example['content'],
@@ -579,6 +605,9 @@ def main():
         print("  ✓ Cosine similarity: Normalized, magnitude-invariant")
     else:
         print("  ⚠ L2 norm: Sensitive to magnitude differences")
+        
+    if args.perturbation:
+        print("  ⚠ Perturbation mode: Measuring trajectory divergence (slower)")
     
     # Phase 0: Pre-compute novel states (only for cached mode)
     novel_states = {}
