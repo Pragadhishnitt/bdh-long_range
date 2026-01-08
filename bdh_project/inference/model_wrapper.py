@@ -200,7 +200,9 @@ class BDHReasoningWrapper:
         
         diff = novel_state.rho_matrix - backstory_state.rho_matrix
         return float(diff.norm(p=2).item())
-
+    
+    @torch.no_grad()
+    def scan_novel(
         self,
         novel_path: Path,
         initial_state: RecurrentState,
@@ -260,6 +262,7 @@ class BDHReasoningWrapper:
         
         metrics.finalize()
         return metrics
+
     
     @torch.no_grad()
     def process_example(
