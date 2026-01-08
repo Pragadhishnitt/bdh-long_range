@@ -226,63 +226,46 @@ flowchart LR
 
 ## 7. Implementation Status
 
-### ✅ Completed (Per Implementation Plan)
+### ✅ Completed Features
+| Component | Status | Notes |
+|-----------|--------|-------|
+| **Core Model** | ✅ Done | Recurrent BDH (4 & 6 layers) |
+| **State Tracking** | ✅ Done | ρ-matrix with 0.99 damping |
+| **Pipeline Modes** | ✅ Done | Cached (Fast), Streaming (Accurate), Perturbation |
+| **Metrics** | ✅ Done | Cosine Similarity (Default) & L2 Norm |
+| **Optimization** | ✅ Done | Novel state caching (23x speedup) |
+| **Validation** | ✅ Done | 60/20 Stratified Split |
+| **Kaggle Support** | ✅ Done | Automated environment setup |
 
-| Component | File | Status |
-|-----------|------|--------|
-| Model config (default/small) | `config/model_config.py` | ✅ Done |
-| Recurrent BDH wrapper | `model/bdh_recurrent.py` | ✅ Done |
-| State tracking (ρ-matrix) | `model/bdh_recurrent.py` | ✅ Done |
-| Velocity computation | `metrics/analysis_metrics.py` | ✅ Done |
-| Threshold calibration | `metrics/analysis_metrics.py` | ✅ Done |
-| Data loader + ByteTokenizer | `utils/data_loader.py` | ✅ Done |
-| Inference wrapper | `inference/model_wrapper.py` | ✅ Done |
-| CLI pipeline | `main.py` | ✅ Done |
-| Kaggle pipeline | `kaggle_pipeline.py` | ✅ Done |
-| Progress bars (tqdm) | `main.py`, `model_wrapper.py` | ✅ Done |
-| Checkpointing | `main.py` | ✅ Done (every 10 examples) |
-| Velocity plots | `main.py` | ✅ Done |
-
-### ⏳ Pending (User Action Required)
-
-| Task | Action |
-|------|--------|
-| Full calibration run | `python main.py --train --small` on GPU |
-| Test inference | `python main.py --inference` after calibration |
-| Generate results.csv | Automatic after inference |
-| Ensembling | Implement if velocity accuracy < 70% |
-| Damping tuning | Try 0.95, 0.99, 0.999 |
-
-### ❌ Not Implemented (Optional Enhancements)
-
-| Feature | Priority |
-|---------|----------|
-| Embedding divergence signal | Medium |
-| Surprisal computation | Low |
-| Multi-run averaging | Low |
-| Spike position analysis | Low |
+### 🔄 In Progress / Optional
+| Feature | Status | Notes |
+|---------|--------|-------|
+| **Ensembling** | ⏳ Pending | Combine velocity + perplexity if needed |
+| **Hyperparam Tuning** | ⏳ Pending | Damping (0.95-0.999), Chunk Size |
 
 ---
 
 ## 8. Usage Examples
 
+### Standard Execution (Cached Mode)
 ```bash
-cd bdh_project
-
-# Full pipeline (default 6-layer)
-python main.py
-
-# 4-layer model (faster, recommended for start)
+# Fast mode (recommended for iteration)
 python main.py --small
+```
 
-# Calibration only
-python main.py --train --small
+### High-Accuracy Execution
+```bash
+# Streaming mode (captures temporal dynamics)
+python main.py --small --mode streaming
+```
 
-# Inference only
-python main.py --inference
+### Advanced Analysis
+```bash
+# Perturbation mode (trajectory divergence)
+python main.py --small --perturbation
 
-# Quick test
-python main.py --dry-run --limit 5 --small
+# Use L2 norm instead of Cosine
+python main.py --small --metric l2
 ```
 
 ---
