@@ -183,6 +183,7 @@ class BDHReasoningWrapper:
         self,
         backstory_state: RecurrentState,
         novel_state: RecurrentState,
+        metric: str = "cosine",  # "cosine" or "l2"
     ) -> float:
         """
         Compute velocity between backstory and novel states.
@@ -190,16 +191,95 @@ class BDHReasoningWrapper:
         Args:
             backstory_state: Final state after reading backstory
             novel_state: Pre-computed novel state
+            metric: "cosine" (normalized) or "l2" (magnitude-sensitive)
             
         Returns:
-            velocity: L2 norm of state difference
+            velocity: Distance metric (cosine: 0-2, l2: unbounded)
         """
         if (backstory_state is None or backstory_state.rho_matrix is None or
             novel_state is None or novel_state.rho_matrix is None):
             return 0.0
         
-        diff = novel_state.rho_matrix - backstory_state.rho_matrix
-        return float(diff.norm(p=2).item())
+        if metric == "cosine":
+            # Cosine distance (1 - cosine_similarity)
+            # More robust to magnitude differences
+            rho_b = backstory_state.rho_matrix.flatten()
+            rho_n = novel_state.rho_matrix.flatten()
+            
+            # Normalize
+            rho_b_norm = rho_b / (rho_b.norm(p=2) + 1e-8)
+            rho_n_norm = rho_n / (rho_n.norm(p=2) + 1e-8)
+            
+            # Cosine similarity
+            cos_sim = (rho_b_norm * rho_n_norm).sum()
+            
+            # Return cosine distance (0 = same, 2 = opposite)
+            return float((1.0 - cos_sim).item())
+        else:
+            # L2 norm (original approach)
+            diff = novel_state.rho_matrix - backstory_state.rho_matrix
+            return float(diff.norm(p=2).item())
+    
+    @torch.no_grad()
+    def compute_perturbation(
+        self,
+        backstory_text: str,
+        novel_path: Path,
+        verbose: bool = False,
+        metric: str = "cosine",
+    ) -> float:
+        """
+        Measure how much the backstory perturbs the novel's trajectory.
+        
+        Compares:
+        - Baseline: Reading novel from scratch
+        - Perturbed: Reading novel after priming with backstory
+        
+        Args:
+            backstory_text: Character backstory
+            novel_path: Path to novel file
+            verbose: Show progress
+            metric: Distance metric to use
+            
+        Returns:
+            perturbation: How much backstory changes novel processing
+        """
+        # 1. Compute baseline (novel alone)
+        novel_state_baseline = self.compute_novel_state(novel_path, verbose=verbose)
+        
+        # 2. Compute perturbed (backstory -> novel)
+        backstory_state, _ = self.prime_with_backstory(backstory_text, verbose=False)
+        
+        # Now process novel starting from backstory state
+        with open(novel_path, 'r', encoding='utf-8', errors='replace') as f:
+            novel_text = f.read()
+        
+        tokens = self._tokenize(novel_text)
+        chunks = self._chunk_tokens(tokens)
+        
+        state = backstory_state.clone()
+        
+        desc = f"Computing perturbed state..."
+        chunk_iter = tqdm(chunks, desc=desc, leave=False) if verbose else chunks
+        
+        with self.amp_context:
+            for chunk_idx, chunk in enumerate(chunk_iter):
+                _, state, _ = self.model(
+                    chunk,
+                    state=state,
+                    return_state=True,
+                    return_rho_update=True,
+                )
+                
+                if chunk_idx % 10 == 0:
+                    state.detach()
+        
+        # 3. Compare baseline vs perturbed
+        return self.compute_velocity_from_states(
+            novel_state_baseline,
+            state,
+            metric=metric,
+        )
     
     @torch.no_grad()
     def scan_novel(

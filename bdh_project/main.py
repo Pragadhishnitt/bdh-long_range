@@ -87,6 +87,11 @@ Examples:
         help="Processing mode: 'cached' (fast, default) or 'streaming' (slow, accurate)"
     )
     parser.add_argument(
+        "--metric", type=str, default="cosine",
+        choices=["cosine", "l2"],
+        help="Distance metric: 'cosine' (normalized, recommended) or 'l2' (magnitude-sensitive)"
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="Quick test run without full processing"
     )
@@ -213,6 +218,7 @@ def run_calibration(
     args: argparse.Namespace,
     config_name: str,
     mode: str = "cached",
+    metric: str = "cosine",
     is_validation: bool = False,
 ) -> CalibrationResult:
     """Run calibration on training set using cached novel states."""
@@ -276,6 +282,7 @@ def run_calibration(
                 velocity = wrapper.compute_velocity_from_states(
                     backstory_state,
                     novel_state,
+                    metric=metric,
                 )
             
             # Record result
@@ -330,6 +337,7 @@ def run_inference(
     paths: Dict[str, Path],
     args: argparse.Namespace,
     mode: str = "cached",
+    metric: str = "cosine",
 ) -> pd.DataFrame:
     """Run inference on test set using cached novel states."""
     print("\n" + "="*60)
@@ -381,6 +389,7 @@ def run_inference(
                     velocity = wrapper.compute_velocity_from_states(
                         backstory_state,
                         novel_state,
+                        metric=metric,
                     )
                     
                     # Predict
@@ -557,12 +566,19 @@ def main():
     run_train = not args.inference
     run_infer = not args.train
     mode = args.mode
+    metric = args.metric
     
     print(f"\nProcessing Mode: {mode.upper()}")
     if mode == "streaming":
         print("  ⚠ Streaming mode: Slow but captures temporal dynamics")
     else:
         print("  ✓ Cached mode: Fast with pre-computed novel states")
+    
+    print(f"Distance Metric: {metric.upper()}")
+    if metric == "cosine":
+        print("  ✓ Cosine similarity: Normalized, magnitude-invariant")
+    else:
+        print("  ⚠ L2 norm: Sensitive to magnitude differences")
     
     # Phase 0: Pre-compute novel states (only for cached mode)
     novel_states = {}
@@ -582,6 +598,7 @@ def main():
             args=args,
             config_name=config_name,
             mode=mode,
+            metric=metric,
             is_validation=False,
         )
         
@@ -595,6 +612,7 @@ def main():
                 args=args,
                 config_name=config_name,
                 mode=mode,
+                metric=metric,
                 is_validation=True,
             )
         
@@ -626,6 +644,7 @@ def main():
             paths=paths,
             args=args,
             mode=mode,
+            metric=metric,
         )
     
     print("\n" + "="*60)
