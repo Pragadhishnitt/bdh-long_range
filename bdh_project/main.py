@@ -284,6 +284,7 @@ def run_calibration(
                         novel_path=novel_path,
                         verbose=False,
                         metric=metric,
+                        novel_state_baseline=novel_state,  # Use cached state!
                     )
                 else:
                     # Standard cached mode: compare final states
@@ -375,16 +376,24 @@ def run_inference(
             
             # Choose processing mode
             if mode == "streaming":
-                # Original approach: stream the full novel
-                novel_path = loader.get_book_path(book_name)
-                metrics = wrapper.process_example(
-                    backstory=example['content'],
-                    novel_path=novel_path,
-                    verbose=False,
-                    max_chunks=args.max_chunks if args.dry_run else None,
-                )
-                velocity = metrics.max_velocity
-                prediction = calibration.predict(velocity)
+                # Streaming mode: Use cached states for inference
+                # (Streaming is only needed during calibration to find threshold)
+                if book_name not in novel_states:
+                    print(f"\n⚠ Novel state not cached for {book_name}, using default")
+                    prediction = 1
+                    velocity = 0.0
+                else:
+                    novel_state = novel_states[book_name]
+                    backstory_state, _ = wrapper.prime_with_backstory(
+                        example['content'],
+                        verbose=False,
+                    )
+                    velocity = wrapper.compute_velocity_from_states(
+                        backstory_state,
+                        novel_state,
+                        metric=metric,
+                    )
+                    prediction = calibration.predict(velocity)
             else:
                 # Cached approach: compare final states
                 if book_name not in novel_states:
@@ -402,6 +411,7 @@ def run_inference(
                         novel_path=novel_path,
                         verbose=False,
                         metric=metric,
+                        novel_state_baseline=novel_state,  # Use cached state!
                     )
                 else:
                     # Standard cached mode

@@ -227,6 +227,7 @@ class BDHReasoningWrapper:
         novel_path: Path,
         verbose: bool = False,
         metric: str = "cosine",
+        novel_state_baseline: Optional[RecurrentState] = None,  # Use cached if provided
     ) -> float:
         """
         Measure how much the backstory perturbs the novel's trajectory.
@@ -240,12 +241,14 @@ class BDHReasoningWrapper:
             novel_path: Path to novel file
             verbose: Show progress
             metric: Distance metric to use
+            novel_state_baseline: Pre-computed baseline state (if cached)
             
         Returns:
             perturbation: How much backstory changes novel processing
         """
-        # 1. Compute baseline (novel alone)
-        novel_state_baseline = self.compute_novel_state(novel_path, verbose=verbose)
+        # 1. Get or compute baseline (novel alone)
+        if novel_state_baseline is None:
+            novel_state_baseline = self.compute_novel_state(novel_path, verbose=verbose)
         
         # 2. Compute perturbed (backstory -> novel)
         backstory_state, _ = self.prime_with_backstory(backstory_text, verbose=False)
