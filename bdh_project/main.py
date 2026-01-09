@@ -570,14 +570,14 @@ def run_kfold_calibration(
                     )
                     
                     if is_trajectory:
-                        # CORRECT: Use trajectory perturbation
-                        velocity = wrapper.compute_trajectory_perturbation(
+                        # Use perturbation mode with cached FINAL state as baseline
+                        final_baseline = novel_info[-1] if isinstance(novel_info, list) else novel_info
+                        velocity = wrapper.compute_perturbation(
                             backstory_text=example['content'],
                             novel_path=novel_path,
-                            novel_trajectory=novel_info,
-                            stride=args.stride,
+                            verbose=False,
                             metric=metric,
-                            aggregation="max",
+                            novel_state_baseline=final_baseline,
                         )
                     else:
                         velocity = wrapper.compute_velocity_from_states(
@@ -658,14 +658,14 @@ def run_kfold_calibration(
                     )
                     
                     if is_trajectory:
-                        # CORRECT: Use trajectory perturbation
-                        velocity = wrapper.compute_trajectory_perturbation(
+                        # Use perturbation mode with cached FINAL state as baseline
+                        final_baseline = novel_info[-1] if isinstance(novel_info, list) else novel_info
+                        velocity = wrapper.compute_perturbation(
                             backstory_text=example['content'],
                             novel_path=novel_path,
-                            novel_trajectory=novel_info,
-                            stride=args.stride,
+                            verbose=False,
                             metric=metric,
-                            aggregation="max",
+                            novel_state_baseline=final_baseline,
                         )
                     else:
                         velocity = wrapper.compute_velocity_from_states(
@@ -857,14 +857,14 @@ def run_ensemble_calibration(
                 velocity = metrics.max_velocity
             else:
                 if is_trajectory:
-                    # CORRECT: Use trajectory perturbation
-                    velocity = wrapper.compute_trajectory_perturbation(
+                    # Use perturbation mode with cached FINAL state as baseline
+                    final_baseline = novel_data[-1] if isinstance(novel_data, list) else novel_data
+                    velocity = wrapper.compute_perturbation(
                         backstory_text=example['content'],
                         novel_path=novel_path,
-                        novel_trajectory=novel_data,
-                        stride=args.stride,
+                        verbose=False,
                         metric=metric,
-                        aggregation="max",
+                        novel_state_baseline=final_baseline,
                     )
                 else:
                     velocity = wrapper.compute_velocity_from_states(
@@ -1077,16 +1077,16 @@ def run_calibration(
                     
                     # Compute velocity against cached novel state
                     if use_trajectories:
-                        # CORRECT: Use trajectory perturbation
-                        # This measures how backstory CHANGES novel reading
+                        # Use perturbation mode with cached FINAL state as baseline
+                        # This re-reads novel ONCE per example (necessary for correct measurement)
                         novel_path = loader.get_book_path(book_name)
-                        velocity = wrapper.compute_trajectory_perturbation(
+                        final_baseline = novel_state[-1] if isinstance(novel_state, list) else novel_state
+                        velocity = wrapper.compute_perturbation(
                             backstory_text=example['content'],
                             novel_path=novel_path,
-                            novel_trajectory=novel_state,  # This is a list of states
-                            stride=args.stride,
+                            verbose=False,
                             metric=metric,
-                            aggregation="max",  # max perturbation = contradiction
+                            novel_state_baseline=final_baseline,
                         )
                     else:
                         velocity = wrapper.compute_velocity_from_states(
@@ -1245,15 +1245,15 @@ def run_inference(
                         
                         # Compute velocity (handle both trajectories and single states)
                         if is_trajectory:
-                            # CORRECT: Use trajectory perturbation
+                            # Use perturbation mode with cached FINAL state as baseline
                             novel_path = loader.get_book_path(book_name)
-                            velocity = wrapper.compute_trajectory_perturbation(
+                            final_baseline = novel_data[-1] if isinstance(novel_data, list) else novel_data
+                            velocity = wrapper.compute_perturbation(
                                 backstory_text=example['content'],
                                 novel_path=novel_path,
-                                novel_trajectory=novel_data,
-                                stride=args.stride,
+                                verbose=False,
                                 metric=metric,
-                                aggregation="max",
+                                novel_state_baseline=final_baseline,
                             )
                         else:
                             # Use single state velocity
