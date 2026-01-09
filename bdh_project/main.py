@@ -556,6 +556,13 @@ def run_ensemble_calibration(
             # Prime with backstory
             backstory_state, _ = wrapper.prime_with_backstory(example['content'], verbose=False)
             
+            # Get novel data and check if it's a trajectory
+            novel_data = novel_states.get(book_name) if mode == "cached" else None
+            is_trajectory = isinstance(novel_data, list) if novel_data else False
+            
+            # For single state, use as-is or get last from trajectory
+            novel_state = novel_data[-1] if is_trajectory else novel_data
+            
             # Hypothesis A: Velocity
             if mode == "streaming":
                 metrics = wrapper.process_example(
@@ -566,14 +573,18 @@ def run_ensemble_calibration(
                 )
                 velocity = metrics.max_velocity
             else:
-                novel_state = novel_states[book_name]
-                velocity = wrapper.compute_velocity_from_states(
-                    backstory_state, novel_state, metric=metric
-                )
+                if is_trajectory:
+                    # Use trajectory-based velocity
+                    velocity = wrapper.compute_trajectory_velocity(
+                        backstory_state, novel_data, metric=metric
+                    )
+                else:
+                    velocity = wrapper.compute_velocity_from_states(
+                        backstory_state, novel_state, metric=metric
+                    )
             
             # Hypothesis B: Embedding Divergence
-            if mode == "cached":
-                novel_state = novel_states[book_name]
+            if mode == "cached" and novel_state is not None:
                 divergence = wrapper.compute_embedding_divergence(
                     backstory_state, novel_state, metric=metric
                 )
