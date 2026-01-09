@@ -20,6 +20,7 @@ import pickle
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
 
 import pandas as pd
 import numpy as np
@@ -868,41 +869,55 @@ def run_inference(
                     )
                     prediction = calibration.predict(velocity)
             else:
-                # Cached approach: compare final states
+                # Cached approach: compare final states or trajectories
                 if book_name not in novel_states:
                     print(f"\n⚠ Novel state not cached for {book_name}, using default")
                     prediction = 1  # Default to consistent
                     velocity = 0.0
                 else:
-                    novel_state = novel_states[book_name]
+                    novel_data = novel_states[book_name]
                     
-                if args.perturbation:
-                    # Perturbation mode
-                    novel_path = loader.get_book_path(book_name)
-                    velocity = wrapper.compute_perturbation(
-                        backstory_text=example['content'],
-                        novel_path=novel_path,
-                        verbose=False,
-                        metric=metric,
-                        novel_state_baseline=novel_state,  # Use cached state!
-                    )
-                else:
-                    # Standard cached mode
-                    # Process only the backstory
-                    backstory_state, _ = wrapper.prime_with_backstory(
-                        example['content'],
-                        verbose=False,
-                    )
+                    # Check if it's a trajectory (list) or single state
+                    is_trajectory = isinstance(novel_data, list)
                     
-                    # Compute velocity
-                    velocity = wrapper.compute_velocity_from_states(
-                        backstory_state,
-                        novel_state,
-                        metric=metric,
-                    )
-                    
-                    # Predict
-                    prediction = calibration.predict(velocity)
+                    if args.perturbation:
+                        # Perturbation mode
+                        novel_path = loader.get_book_path(book_name)
+                        # Use last state of trajectory or single state
+                        novel_state_baseline = novel_data[-1] if is_trajectory else novel_data
+                        velocity = wrapper.compute_perturbation(
+                            backstory_text=example['content'],
+                            novel_path=novel_path,
+                            verbose=False,
+                            metric=metric,
+                            novel_state_baseline=novel_state_baseline,
+                        )
+                    else:
+                        # Standard cached mode
+                        # Process only the backstory
+                        backstory_state, _ = wrapper.prime_with_backstory(
+                            example['content'],
+                            verbose=False,
+                        )
+                        
+                        # Compute velocity (handle both trajectories and single states)
+                        if is_trajectory:
+                            # Use trajectory-based velocity
+                            velocity = wrapper.compute_trajectory_velocity(
+                                backstory_state,
+                                novel_data,
+                                metric=metric,
+                            )
+                        else:
+                            # Use single state velocity
+                            velocity = wrapper.compute_velocity_from_states(
+                                backstory_state,
+                                novel_data,
+                                metric=metric,
+                            )
+                        
+                        # Predict
+                        prediction = calibration.predict(velocity)
             
             results.append({
                 "id": example['id'],
