@@ -469,6 +469,210 @@ def run_kfold_calibration(
     return final_calibration, fold_results
 
 
+@dataclass
+class EnsembleCalibration:
+    """Calibration results for ensemble of 3 hypotheses."""
+    # Individual calibrations
+    velocity_calibration: CalibrationResult = None
+    divergence_calibration: CalibrationResult = None
+    perplexity_calibration: CalibrationResult = None
+    
+    # Ensemble results
+    ensemble_accuracy: float = 0.0
+    
+    def predict_ensemble(self, velocity: float, divergence: float, perplexity: float) -> int:
+        """Majority vote across 3 hypotheses."""
+        votes = []
+        
+        # Hypothesis A: Velocity (lower = consistent)
+        if self.velocity_calibration:
+            votes.append(1 if velocity < self.velocity_calibration.optimal_threshold else 0)
+        
+        # Hypothesis B: Divergence (lower = consistent)
+        if self.divergence_calibration:
+            votes.append(1 if divergence < self.divergence_calibration.optimal_threshold else 0)
+        
+        # Hypothesis C: Perplexity (lower = consistent)
+        if self.perplexity_calibration:
+            votes.append(1 if perplexity < self.perplexity_calibration.optimal_threshold else 0)
+        
+        # Majority vote (2/3)
+        return 1 if sum(votes) >= 2 else 0
+
+
+def run_ensemble_calibration(
+    wrapper: BDHReasoningWrapper,
+    loader: DataLoader,
+    novel_states: Dict[str, any],
+    paths: Dict[str, Path],
+    args: argparse.Namespace,
+    config_name: str,
+    mode: str = "cached",
+    metric: str = "cosine",
+) -> EnsembleCalibration:
+    """Run calibration for all 3 ensemble hypotheses."""
+    print("\n" + "="*60)
+    print("ENSEMBLE CALIBRATION (3 HYPOTHESES)")
+    print("="*60)
+    
+    train_examples = loader.get_train_examples()
+    
+    # Split into train (60) and validation (20)
+    if not args.dry_run and not args.limit:
+        from sklearn.model_selection import train_test_split
+        train_split, val_split = train_test_split(
+            train_examples,
+            train_size=60,
+            test_size=20,
+            random_state=42,
+            stratify=[ex['label_binary'] for ex in train_examples]
+        )
+        examples = train_split
+    else:
+        examples = train_examples[:args.limit] if args.limit else train_examples
+    
+    # Initialize calibrations
+    velocity_cal = CalibrationResult()
+    divergence_cal = CalibrationResult()
+    perplexity_cal = CalibrationResult()
+    
+    # Collect signals from all 3 hypotheses
+    print("\nCollecting signals from all 3 hypotheses...")
+    pbar = tqdm(examples, desc="Ensemble Calibration")
+    
+    import gc
+    
+    for i, example in enumerate(pbar):
+        try:
+            book_name = example['book_name']
+            
+            if mode == "cached" and book_name not in novel_states:
+                continue
+            
+            # Get novel path
+            novel_path = loader.get_book_path(book_name)
+            
+            # Prime with backstory
+            backstory_state, _ = wrapper.prime_with_backstory(example['content'], verbose=False)
+            
+            # Hypothesis A: Velocity
+            if mode == "streaming":
+                metrics = wrapper.process_example(
+                    backstory=example['content'],
+                    novel_path=novel_path,
+                    verbose=False,
+                    max_chunks=args.max_chunks if args.dry_run else None,
+                )
+                velocity = metrics.max_velocity
+            else:
+                novel_state = novel_states[book_name]
+                velocity = wrapper.compute_velocity_from_states(
+                    backstory_state, novel_state, metric=metric
+                )
+            
+            # Hypothesis B: Embedding Divergence
+            if mode == "cached":
+                novel_state = novel_states[book_name]
+                divergence = wrapper.compute_embedding_divergence(
+                    backstory_state, novel_state, metric=metric
+                )
+            else:
+                # For streaming, recompute novel state for divergence
+                novel_state = wrapper.compute_novel_state(novel_path, verbose=False)
+                divergence = wrapper.compute_embedding_divergence(
+                    backstory_state, novel_state, metric=metric
+                )
+            
+            # Hypothesis C: Perplexity
+            perplexity = wrapper.compute_perplexity(
+                backstory_text=example['content'],
+                novel_path=novel_path,
+                max_chunks=5 if args.dry_run else None,  # Limit for speed
+            )
+            
+            # Record all signals
+            velocity_cal.add_example(example['id'], velocity, example['label_binary'])
+            divergence_cal.add_example(example['id'], divergence, example['label_binary'])
+            perplexity_cal.add_example(example['id'], perplexity, example['label_binary'])
+            
+            pbar.set_postfix({
+                "vel": f"{velocity:.2f}",
+                "div": f"{divergence:.4f}",
+                "ppl": f"{perplexity:.2f}",
+            })
+            
+            if mode == "streaming":
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    
+        except Exception as e:
+            print(f"\n⚠ Error: {e}")
+            continue
+    
+    # Compute optimal thresholds for each hypothesis
+    print("\n" + "-"*40)
+    print("HYPOTHESIS A: Velocity")
+    velocity_cal.compute_optimal_threshold()
+    print(f"  Threshold: {velocity_cal.optimal_threshold:.6f}")
+    print(f"  Accuracy: {velocity_cal.train_accuracy:.2%}")
+    print(f"  F1: {velocity_cal.f1:.4f}")
+    
+    print("\n" + "-"*40)
+    print("HYPOTHESIS B: Embedding Divergence")
+    divergence_cal.compute_optimal_threshold()
+    print(f"  Threshold: {divergence_cal.optimal_threshold:.6f}")
+    print(f"  Accuracy: {divergence_cal.train_accuracy:.2%}")
+    print(f"  F1: {divergence_cal.f1:.4f}")
+    
+    print("\n" + "-"*40)
+    print("HYPOTHESIS C: Perplexity")
+    perplexity_cal.compute_optimal_threshold()
+    print(f"  Threshold: {perplexity_cal.optimal_threshold:.6f}")
+    print(f"  Accuracy: {perplexity_cal.train_accuracy:.2%}")
+    print(f"  F1: {perplexity_cal.f1:.4f}")
+    
+    # Compute ensemble accuracy (majority vote)
+    ensemble_cal = EnsembleCalibration(
+        velocity_calibration=velocity_cal,
+        divergence_calibration=divergence_cal,
+        perplexity_calibration=perplexity_cal,
+    )
+    
+    ensemble_correct = 0
+    total = len(velocity_cal.labels)
+    
+    for i in range(total):
+        vel = velocity_cal.max_velocities[i]
+        div = divergence_cal.max_velocities[i]
+        ppl = perplexity_cal.max_velocities[i]
+        label = velocity_cal.labels[i]
+        
+        pred = ensemble_cal.predict_ensemble(vel, div, ppl)
+        if pred == label:
+            ensemble_correct += 1
+    
+    ensemble_cal.ensemble_accuracy = ensemble_correct / total if total > 0 else 0.0
+    
+    print("\n" + "="*60)
+    print("ENSEMBLE RESULTS (Majority Vote)")
+    print(f"  Accuracy: {ensemble_cal.ensemble_accuracy:.2%}")
+    print("="*60)
+    
+    # Save ensemble calibration
+    ensemble_path = paths["checkpoints"] / "ensemble_calibration.json"
+    with open(ensemble_path, 'w') as f:
+        json.dump({
+            "velocity_threshold": velocity_cal.optimal_threshold,
+            "divergence_threshold": divergence_cal.optimal_threshold,
+            "perplexity_threshold": perplexity_cal.optimal_threshold,
+            "ensemble_accuracy": ensemble_cal.ensemble_accuracy,
+        }, f, indent=2)
+    print(f"\n✓ Saved ensemble calibration to {ensemble_path}")
+    
+    return ensemble_cal
+
+
 def run_calibration(
     wrapper: BDHReasoningWrapper,
     loader: DataLoader,
@@ -915,10 +1119,25 @@ def main():
     calibration = None
     validation_result = None
     fold_results = None
+    ensemble_calibration = None
     
     # Phase 1: Calibration
     if run_train:
-        if args.improvise:
+        if args.ensemble:
+            # Ensemble mode: calibrate all 3 hypotheses
+            ensemble_calibration = run_ensemble_calibration(
+                wrapper=wrapper,
+                loader=loader,
+                novel_states=novel_data,
+                paths=paths,
+                args=args,
+                config_name=config_name,
+                mode=mode,
+                metric=metric,
+            )
+            # Use velocity calibration as fallback for plots
+            calibration = ensemble_calibration.velocity_calibration
+        elif args.improvise:
             # K-fold cross-validation for robust threshold
             calibration, fold_results = run_kfold_calibration(
                 wrapper=wrapper,

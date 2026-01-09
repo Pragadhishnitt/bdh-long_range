@@ -60,14 +60,27 @@ python main.py --small --mode cached --ensemble
 - For cached mode: Multi-checkpoint trajectories (25%, 50%, 75%, 100%)
 - **Accuracy**: ~75-78% (cached) or ~82-85% (streaming)
 
-### 5. Ensemble Mode
+### 5. Ensemble Mode (All 3 Hypotheses)
 **Command**: `python main.py --mode cached --ensemble`
-**Speed**: ~35 min (cached)
-**Method**: Combines all 3 hypotheses:
+**Speed**: ~45 min (cached) or ~4 hrs (streaming)
+**Method**: Combines all 3 hypotheses with majority vote:
 - **A. Velocity-Based**: Track ρ-matrix change rate
-- **B. Embedding Divergence**: Measure drift from backstory
-- **C. Perplexity**: Backstory-conditioned perplexity
-- **Decision**: Majority vote (2/3 signals)
+- **B. Embedding Divergence**: Measure drift from backstory embedding
+- **C. Perplexity**: Backstory-conditioned perplexity on novel
+- **Decision**: Majority vote (2/3 signals agree)
+- **Expected Accuracy**: ~72-75% (cached), ~82-85% (streaming)
+
+**Usage Examples:**
+```bash
+# Cached mode with ensemble (recommended for balance)
+python main.py --small --mode cached --ensemble
+
+# Streaming mode with ensemble (maximum accuracy)
+python main.py --small --mode streaming --ensemble
+
+# Combine improvise + ensemble (best of both)
+python main.py --small --mode cached --improvise --ensemble
+```
 
 ---
 

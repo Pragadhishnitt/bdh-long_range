@@ -329,6 +329,125 @@ class BDHReasoningWrapper:
             return float(diff.norm(p=2).item())
     
     @torch.no_grad()
+    def compute_embedding_divergence(
+        self,
+        backstory_state: RecurrentState,
+        novel_state: RecurrentState,
+        metric: str = "cosine",
+    ) -> float:
+        """
+        Hypothesis B: Measure embedding drift from backstory to novel.
+        
+        Uses the mean of rho_matrix as an aggregate embedding representation.
+        Lower divergence = backstory aligns with novel.
+        Higher divergence = backstory contradicts novel.
+        
+        Args:
+            backstory_state: State after reading backstory
+            novel_state: State after reading novel
+            metric: Distance metric ("cosine" or "l2")
+            
+        Returns:
+            divergence: Embedding divergence score
+        """
+        if (backstory_state is None or backstory_state.rho_matrix is None or
+            novel_state is None or novel_state.rho_matrix is None):
+            return 0.0
+        
+        # Aggregate rho_matrix to a single embedding vector
+        # Shape: [batch, seq_len, d_model] -> [d_model]
+        backstory_emb = backstory_state.rho_matrix.mean(dim=1).squeeze(0)  # [d_model]
+        novel_emb = novel_state.rho_matrix.mean(dim=1).squeeze(0)  # [d_model]
+        
+        if metric == "cosine":
+            # Cosine distance
+            backstory_norm = backstory_emb / (backstory_emb.norm(p=2) + 1e-8)
+            novel_norm = novel_emb / (novel_emb.norm(p=2) + 1e-8)
+            cos_sim = (backstory_norm * novel_norm).sum()
+            return float((1.0 - cos_sim).item())
+        else:
+            # L2 distance
+            diff = novel_emb - backstory_emb
+            return float(diff.norm(p=2).item())
+    
+    @torch.no_grad()
+    def compute_perplexity(
+        self,
+        backstory_text: str,
+        novel_path: Path,
+        max_chunks: Optional[int] = None,
+    ) -> float:
+        """
+        Hypothesis C: Compute perplexity of novel given backstory context.
+        
+        Lower perplexity = backstory aligns with novel (model is less surprised).
+        Higher perplexity = backstory contradicts novel (model is more surprised).
+        
+        Args:
+            backstory_text: Character backstory
+            novel_path: Path to novel file
+            max_chunks: Limit chunks for testing (None = all)
+            
+        Returns:
+            perplexity: exp(mean_loss) over novel chunks
+        """
+        import math
+        
+        # Prime with backstory
+        primed_state, _ = self.prime_with_backstory(backstory_text, verbose=False)
+        
+        # Load novel
+        with open(novel_path, 'r', encoding='utf-8', errors='replace') as f:
+            novel_text = f.read()
+        
+        tokens = self._tokenize(novel_text)
+        chunks = self._chunk_tokens(tokens)
+        
+        if max_chunks is not None:
+            chunks = chunks[:max_chunks]
+        
+        state = primed_state.clone()
+        total_loss = 0.0
+        total_tokens = 0
+        
+        with self.amp_context:
+            for chunk in chunks:
+                # Get logits and compute cross-entropy loss
+                logits, state, _ = self.model(
+                    chunk,
+                    state=state,
+                    return_state=True,
+                    return_rho_update=True,
+                )
+                
+                # Shift for next-token prediction
+                # logits: [batch, seq_len, vocab_size]
+                # targets: chunk shifted by 1
+                shift_logits = logits[:, :-1, :].contiguous()
+                shift_targets = chunk[:, 1:].contiguous()
+                
+                # Compute loss
+                loss_fn = torch.nn.CrossEntropyLoss(reduction='sum')
+                loss = loss_fn(
+                    shift_logits.view(-1, shift_logits.size(-1)),
+                    shift_targets.view(-1)
+                )
+                
+                total_loss += loss.item()
+                total_tokens += shift_targets.numel()
+                
+                state.detach()
+        
+        # Compute perplexity
+        if total_tokens == 0:
+            return 1.0
+        
+        mean_loss = total_loss / total_tokens
+        perplexity = math.exp(min(mean_loss, 20))  # Cap to prevent overflow
+        
+        return float(perplexity)
+    
+    @torch.no_grad()
     def compute_perturbation(
         self,
         backstory_text: str,
