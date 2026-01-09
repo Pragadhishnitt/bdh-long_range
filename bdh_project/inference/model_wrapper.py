@@ -179,6 +179,114 @@ class BDHReasoningWrapper:
         return state
     
     @torch.no_grad()
+    def compute_novel_trajectory(
+        self,
+        novel_path: Path,
+        checkpoints: List[float] = [0.25, 0.50, 0.75, 1.0],
+        verbose: bool = True,
+    ) -> List:
+        """
+        Compute states at multiple checkpoints throughout the novel.
+        Used for --improvise mode to capture temporal dynamics.
+        
+        Args:
+            novel_path: Path to novel text file
+            checkpoints: List of progress points (0.0-1.0) to save states
+            verbose: Show progress bar
+            
+        Returns:
+            states: List of RecurrentState objects at each checkpoint
+        """
+        # Load and tokenize novel
+        with open(novel_path, 'r', encoding='utf-8', errors='replace') as f:
+            novel_text = f.read()
+        
+        tokens = self._tokenize(novel_text)
+        chunks = self._chunk_tokens(tokens)
+        total_chunks = len(chunks)
+        
+        # Calculate checkpoint indices
+        checkpoint_indices = [int(total_chunks * cp) - 1 for cp in checkpoints]
+        checkpoint_indices = [max(0, idx) for idx in checkpoint_indices]  # Ensure non-negative
+        
+        checkpoint_states = []
+        state = self.model.reset_state()
+        next_checkpoint = 0
+        
+        desc = f"Computing trajectory: {novel_path.name[:25]}..."
+        chunk_iter = tqdm(chunks, desc=desc, leave=False) if verbose else chunks
+        
+        with self.amp_context:
+            for chunk_idx, chunk in enumerate(chunk_iter):
+                _, state, _ = self.model(
+                    chunk,
+                    state=state,
+                    return_state=True,
+                    return_rho_update=True,
+                )
+                
+                # Save state at checkpoint
+                if (next_checkpoint < len(checkpoint_indices) and 
+                    chunk_idx >= checkpoint_indices[next_checkpoint]):
+                    checkpoint_states.append(state.clone())
+                    next_checkpoint += 1
+                
+                if chunk_idx % 10 == 0:
+                    state.detach()
+        
+        # Ensure we have all checkpoints (add final state if needed)
+        while len(checkpoint_states) < len(checkpoints):
+            checkpoint_states.append(state.clone())
+        
+        return checkpoint_states
+    
+    @torch.no_grad()
+    def compute_trajectory_velocity(
+        self,
+        backstory_state: RecurrentState,
+        novel_trajectory: List,
+        metric: str = "cosine",
+        aggregation: str = "max",
+    ) -> float:
+        """
+        Compute velocity between backstory and novel trajectory checkpoints.
+        Returns max velocity across trajectory to detect contradictions at any point.
+        
+        Args:
+            backstory_state: State after reading backstory
+            novel_trajectory: List of states at checkpoints (from compute_novel_trajectory)
+            metric: Distance metric ("cosine" or "l2")
+            aggregation: How to combine velocities ("max", "mean", "weighted")
+            
+        Returns:
+            velocity: Aggregated velocity across trajectory
+        """
+        import numpy as np
+        
+        velocities = []
+        for checkpoint_state in novel_trajectory:
+            vel = self.compute_velocity_from_states(
+                backstory_state,
+                checkpoint_state,
+                metric=metric,
+            )
+            velocities.append(vel)
+        
+        if not velocities:
+            return 0.0
+        
+        if aggregation == "max":
+            return max(velocities)
+        elif aggregation == "mean":
+            return float(np.mean(velocities))
+        elif aggregation == "weighted":
+            # Weight later checkpoints more heavily
+            weights = [0.1, 0.2, 0.3, 0.4][:len(velocities)]
+            return float(np.average(velocities, weights=weights))
+        else:
+            return max(velocities)
+    
+    @torch.no_grad()
     def compute_velocity_from_states(
         self,
         backstory_state: RecurrentState,

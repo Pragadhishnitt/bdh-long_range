@@ -6,8 +6,15 @@ during novel scanning.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Any
 import numpy as np
+
+# Import sklearn metrics for F1 and confusion matrix
+try:
+    from sklearn.metrics import f1_score, confusion_matrix as sk_confusion_matrix
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
 
 
 @dataclass
@@ -102,6 +109,10 @@ class CalibrationResult:
     contradict_mean: float = 0.0
     contradict_std: float = 0.0
     
+    # Enhanced metrics (F1 and confusion matrix)
+    f1: float = 0.0
+    confusion_mat: Optional[Any] = None  # np.ndarray, but Optional[Any] for dataclass
+    
     def add_example(self, example_id: int, max_velocity: float, label: int):
         """Add a training example result."""
         self.example_ids.append(example_id)
@@ -146,6 +157,23 @@ class CalibrationResult:
         self.optimal_threshold = float(best_thresh)
         self.train_accuracy = float(best_acc)
         
+        # Compute F1 score and confusion matrix with best threshold
+        final_predictions = (velocities < best_thresh).astype(int)
+        if SKLEARN_AVAILABLE:
+            self.f1 = float(f1_score(labels, final_predictions, zero_division=0))
+            self.confusion_mat = sk_confusion_matrix(labels, final_predictions)
+        else:
+            # Fallback: compute F1 manually
+            tp = ((final_predictions == 1) & (labels == 1)).sum()
+            fp = ((final_predictions == 1) & (labels == 0)).sum()
+            fn = ((final_predictions == 0) & (labels == 1)).sum()
+            precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+            recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+            self.f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+            # Manual confusion matrix as 2D list
+            tn = ((final_predictions == 0) & (labels == 0)).sum()
+            self.confusion_mat = np.array([[tn, fp], [fn, tp]])
+        
         return self.optimal_threshold
     
     def predict(self, max_velocity: float) -> int:
@@ -155,15 +183,33 @@ class CalibrationResult:
     
     def to_dict(self) -> dict:
         """Serialize for checkpointing."""
-        return {
+        result = {
             "optimal_threshold": self.optimal_threshold,
             "train_accuracy": self.train_accuracy,
+            "f1_score": self.f1,
             "consistent_mean": self.consistent_mean,
             "consistent_std": self.consistent_std,
             "contradict_mean": self.contradict_mean,
             "contradict_std": self.contradict_std,
             "n_examples": len(self.example_ids),
         }
+        if self.confusion_mat is not None:
+            result["confusion_matrix"] = self.confusion_mat.tolist()
+        return result
+    
+    def print_confusion_matrix(self) -> str:
+        """Return formatted confusion matrix string."""
+        if self.confusion_mat is None:
+            return "Confusion matrix not computed"
+        
+        cm = self.confusion_mat
+        lines = [
+            "              Predicted",
+            "              0     1",
+            f"  Actual 0 | {cm[0, 0]:4d}  {cm[0, 1]:4d}",
+            f"  Actual 1 | {cm[1, 0]:4d}  {cm[1, 1]:4d}",
+        ]
+        return "\n".join(lines)
 
 
 def compute_sparsity(tensor) -> float:

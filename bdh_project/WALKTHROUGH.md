@@ -235,12 +235,16 @@ flowchart LR
 | **Metrics** | ✅ Done | Cosine Similarity (Default) & L2 Norm |
 | **Optimization** | ✅ Done | Novel state caching (23x speedup) |
 | **Validation** | ✅ Done | 60/20 Stratified Split |
+| **K-Fold CV** | ✅ Done | `--improvise` flag: 4-fold, median threshold |
+| **Multi-Checkpoint** | ✅ Done | 25%, 50%, 75%, 100% trajectory caching |
+| **F1 & Confusion** | ✅ Done | sklearn metrics in all outputs |
 | **Kaggle Support** | ✅ Done | Automated environment setup |
+| **Kaggle Stability** | ✅ Done | Explicit logging & GC to prevent timeouts |
 
 ### 🔄 In Progress / Optional
 | Feature | Status | Notes |
 |---------|--------|-------|
-| **Ensembling** | ⏳ Pending | Combine velocity + perplexity if needed |
+| **Ensemble Hypothesis** | ⏳ Partial | `--ensemble` flag: Velocity done, B & C pending |
 | **Hyperparam Tuning** | ⏳ Pending | Damping (0.95-0.999), Chunk Size |
 
 ---
@@ -253,9 +257,10 @@ flowchart LR
 python main.py --small
 ```
 
-### High-Accuracy Execution
+### High-Accuracy Execution (Recommended)
 ```bash
 # Streaming mode (captures temporal dynamics)
+# Takes ~3.5 hours but achieves ~80% accuracy
 python main.py --small --mode streaming
 ```
 

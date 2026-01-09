@@ -120,6 +120,16 @@ Examples:
         help="Verbose output"
     )
     
+    # Advanced optimization flags
+    parser.add_argument(
+        "--improvise", action="store_true",
+        help="K-fold cross-validation (4 folds) + multi-checkpoint caching for better accuracy"
+    )
+    parser.add_argument(
+        "--ensemble", action="store_true",
+        help="Combine all 3 hypotheses: velocity + embedding divergence + perplexity (majority vote)"
+    )
+    
     return parser.parse_args()
 
 
@@ -212,6 +222,251 @@ def precompute_novel_states(
     
     print(f"\n✓ Saved novel states to {cache_path}")
     return novel_states
+
+
+def precompute_novel_trajectories(
+    wrapper: BDHReasoningWrapper,
+    loader: DataLoader,
+    paths: Dict[str, Path],
+    checkpoints: List[float] = [0.25, 0.50, 0.75, 1.0],
+) -> Dict[str, List]:
+    """Pre-compute multi-checkpoint novel trajectories for --improvise mode.
+    
+    Args:
+        wrapper: BDH model wrapper
+        loader: Data loader
+        paths: Output paths
+        checkpoints: Progress points to save states (default: 25%, 50%, 75%, 100%)
+    
+    Returns:
+        Dict mapping book_name -> list of states at each checkpoint
+    """
+    cache_path = paths["checkpoints"] / "novel_trajectories.pkl"
+    
+    # Check if cache exists
+    if cache_path.exists():
+        print(f"\n✓ Loading cached novel trajectories from {cache_path}")
+        with open(cache_path, 'rb') as f:
+            return pickle.load(f)
+    
+    print("\n" + "="*60)
+    print("PHASE 0: PRE-COMPUTING NOVEL TRAJECTORIES (MULTI-CHECKPOINT)")
+    print(f"  Checkpoints: {[f'{cp*100:.0f}%' for cp in checkpoints]}")
+    print("="*60)
+    
+    novel_trajectories = {}
+    
+    for book_name in loader.book_mapping.keys():
+        print(f"\nProcessing: {book_name}")
+        novel_path = loader.get_book_path(book_name)
+        
+        # Compute trajectory with multiple checkpoints
+        trajectory = wrapper.compute_novel_trajectory(
+            novel_path, 
+            checkpoints=checkpoints,
+            verbose=True
+        )
+        novel_trajectories[book_name] = trajectory
+        
+        print(f"✓ Cached {len(trajectory)}-checkpoint trajectory for {book_name}")
+    
+    # Save cache
+    with open(cache_path, 'wb') as f:
+        pickle.dump(novel_trajectories, f)
+    
+    print(f"\n✓ Saved novel trajectories to {cache_path}")
+    return novel_trajectories
+
+
+def run_kfold_calibration(
+    wrapper: BDHReasoningWrapper,
+    loader: DataLoader,
+    novel_data: Dict[str, any],
+    paths: Dict[str, Path],
+    args: argparse.Namespace,
+    config_name: str,
+    mode: str = "cached",
+    metric: str = "cosine",
+    use_trajectories: bool = False,
+) -> Tuple[CalibrationResult, List[Dict]]:
+    """Run K-fold cross-validation for robust threshold estimation.
+    
+    Args:
+        wrapper: BDH model wrapper
+        loader: Data loader
+        novel_data: Pre-computed novel states or trajectories
+        paths: Output paths
+        args: Command line arguments
+        config_name: Model config name
+        mode: Processing mode ("cached" or "streaming")
+        metric: Distance metric
+        use_trajectories: If True, novel_data contains trajectories (list of states)
+    
+    Returns:
+        final_calibration: Calibration with median threshold
+        fold_results: Per-fold statistics
+    """
+    from sklearn.model_selection import StratifiedKFold
+    
+    print("\n" + "="*60)
+    print("K-FOLD CROSS-VALIDATION (4 FOLDS)")
+    print("="*60)
+    
+    train_examples = loader.get_train_examples()
+    labels = [ex['label_binary'] for ex in train_examples]
+    
+    kfold = StratifiedKFold(n_splits=4, shuffle=True, random_state=42)
+    fold_results = []
+    all_velocities = []
+    all_labels = []
+    
+    import gc
+    
+    for fold_idx, (train_idx, val_idx) in enumerate(kfold.split(train_examples, labels)):
+        print(f"\n{'-'*40}")
+        print(f"FOLD {fold_idx + 1}/4")
+        print(f"  Train: {len(train_idx)} examples")
+        print(f"  Val: {len(val_idx)} examples")
+        print(f"{'-'*40}")
+        
+        fold_train = [train_examples[i] for i in train_idx]
+        fold_val = [train_examples[i] for i in val_idx]
+        
+        # Run calibration on fold_train
+        fold_calibration = CalibrationResult()
+        
+        for example in tqdm(fold_train, desc=f"Fold {fold_idx+1} Train"):
+            try:
+                book_name = example['book_name']
+                
+                if book_name not in novel_data:
+                    continue
+                
+                if mode == "streaming":
+                    # Full streaming for each example
+                    novel_path = loader.get_book_path(book_name)
+                    metrics = wrapper.process_example(
+                        backstory=example['content'],
+                        novel_path=novel_path,
+                        verbose=False,
+                        max_chunks=args.max_chunks if args.dry_run else None,
+                    )
+                    velocity = metrics.max_velocity
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                else:
+                    # Cached mode
+                    backstory_state, _ = wrapper.prime_with_backstory(
+                        example['content'], verbose=False
+                    )
+                    
+                    if use_trajectories:
+                        # Use trajectory-based velocity
+                        trajectory = novel_data[book_name]
+                        velocity = wrapper.compute_trajectory_velocity(
+                            backstory_state, trajectory, metric=metric
+                        )
+                    else:
+                        # Use single state
+                        novel_state = novel_data[book_name]
+                        velocity = wrapper.compute_velocity_from_states(
+                            backstory_state, novel_state, metric=metric
+                        )
+                
+                fold_calibration.add_example(
+                    example_id=example['id'],
+                    max_velocity=velocity,
+                    label=example['label_binary']
+                )
+                all_velocities.append(velocity)
+                all_labels.append(example['label_binary'])
+                
+            except Exception as e:
+                print(f"\n⚠ Error: {e}")
+                continue
+        
+        fold_calibration.compute_optimal_threshold()
+        
+        # Validate on fold_val
+        val_correct = 0
+        val_total = 0
+        
+        for example in tqdm(fold_val, desc=f"Fold {fold_idx+1} Val"):
+            try:
+                book_name = example['book_name']
+                if book_name not in novel_data:
+                    continue
+                
+                backstory_state, _ = wrapper.prime_with_backstory(
+                    example['content'], verbose=False
+                )
+                
+                if use_trajectories:
+                    trajectory = novel_data[book_name]
+                    velocity = wrapper.compute_trajectory_velocity(
+                        backstory_state, trajectory, metric=metric
+                    )
+                else:
+                    novel_state = novel_data[book_name]
+                    velocity = wrapper.compute_velocity_from_states(
+                        backstory_state, novel_state, metric=metric
+                    )
+                
+                prediction = fold_calibration.predict(velocity)
+                if prediction == example['label_binary']:
+                    val_correct += 1
+                val_total += 1
+                
+            except Exception as e:
+                continue
+        
+        val_accuracy = val_correct / val_total if val_total > 0 else 0.0
+        
+        fold_results.append({
+            "fold": fold_idx + 1,
+            "threshold": fold_calibration.optimal_threshold,
+            "train_accuracy": fold_calibration.train_accuracy,
+            "train_f1": fold_calibration.f1,
+            "val_accuracy": val_accuracy,
+        })
+        
+        print(f"\n  Fold {fold_idx+1} Results:")
+        print(f"    Threshold: {fold_calibration.optimal_threshold:.6f}")
+        print(f"    Train Acc: {fold_calibration.train_accuracy:.2%}, F1: {fold_calibration.f1:.4f}")
+        print(f"    Val Acc: {val_accuracy:.2%}")
+    
+    # Aggregate results
+    thresholds = [r["threshold"] for r in fold_results]
+    final_threshold = float(np.median(thresholds))
+    
+    print(f"\n{'='*60}")
+    print("K-FOLD AGGREGATE RESULTS")
+    print(f"{'='*60}")
+    print(f"  Thresholds: {[f'{t:.6f}' for t in thresholds]}")
+    print(f"  Median Threshold: {final_threshold:.6f}")
+    print(f"  Train Acc: {np.mean([r['train_accuracy'] for r in fold_results]):.2%} ± {np.std([r['train_accuracy'] for r in fold_results]):.2%}")
+    print(f"  Val Acc: {np.mean([r['val_accuracy'] for r in fold_results]):.2%} ± {np.std([r['val_accuracy'] for r in fold_results]):.2%}")
+    
+    # Create final calibration with collected data
+    final_calibration = CalibrationResult(optimal_threshold=final_threshold)
+    for vel, lbl in zip(all_velocities, all_labels):
+        final_calibration.max_velocities.append(vel)
+        final_calibration.labels.append(lbl)
+    final_calibration.compute_optimal_threshold()
+    # Override with median threshold
+    final_calibration.optimal_threshold = final_threshold
+    
+    # Save K-fold results
+    kfold_path = paths["checkpoints"] / "kfold_results.json"
+    with open(kfold_path, 'w') as f:
+        json.dump({
+            "fold_results": fold_results,
+            "final_threshold": final_threshold,
+        }, f, indent=2)
+    print(f"\n✓ Saved K-fold results to {kfold_path}")
+    
+    return final_calibration, fold_results
 
 
 def run_calibration(
@@ -344,8 +599,11 @@ def run_calibration(
     print(f"{phase_name} RESULTS:")
     print(f"  Optimal threshold: {threshold:.6f}")
     print(f"  Accuracy: {calibration.train_accuracy:.2%}")
+    print(f"  F1 Score: {calibration.f1:.4f}")
     print(f"  Consistent μ={calibration.consistent_mean:.4f}, σ={calibration.consistent_std:.4f}")
     print(f"  Contradict μ={calibration.contradict_mean:.4f}, σ={calibration.contradict_std:.4f}")
+    print(f"\n  Confusion Matrix:")
+    print(calibration.print_confusion_matrix())
     print(f"{'─'*40}")
     
     # Save final checkpoint (only during training)
@@ -630,41 +888,76 @@ def main():
     if args.perturbation:
         print("  ⚠ Perturbation mode: Measuring trajectory divergence (slower)")
     
-    # Phase 0: Pre-compute novel states (only for cached mode)
-    novel_states = {}
+    if args.improvise:
+        print("\n➡ IMPROVISE MODE ENABLED:")
+        print("  • K-fold cross-validation (4 folds, median threshold)")
+        if mode == "cached":
+            print("  • Multi-checkpoint trajectory caching (25%, 50%, 75%, 100%)")
+    
+    if args.ensemble:
+        print("\n➡ ENSEMBLE MODE ENABLED:")
+        print("  • Combining: Velocity + Embedding Divergence + Perplexity")
+        print("  • Decision: Majority vote (2/3 signals)")
+    
+    # Phase 0: Pre-compute novel states or trajectories
+    novel_data = {}
+    use_trajectories = False
+    
     if mode == "cached":
-        novel_states = precompute_novel_states(wrapper, loader, paths)
+        if args.improvise:
+            # Multi-checkpoint trajectories for --improvise
+            novel_data = precompute_novel_trajectories(wrapper, loader, paths)
+            use_trajectories = True
+        else:
+            # Single final states (original)
+            novel_data = precompute_novel_states(wrapper, loader, paths)
     
     calibration = None
     validation_result = None
+    fold_results = None
     
-    # Phase 1: Calibration (60 examples)
+    # Phase 1: Calibration
     if run_train:
-        calibration = run_calibration(
-            wrapper=wrapper,
-            loader=loader,
-            novel_states=novel_states,
-            paths=paths,
-            args=args,
-            config_name=config_name,
-            mode=mode,
-            metric=metric,
-            is_validation=False,
-        )
-        
-        # Phase 2: Validation (20 examples)
-        if not args.dry_run and not args.limit:
-            validation_result = run_calibration(
+        if args.improvise:
+            # K-fold cross-validation for robust threshold
+            calibration, fold_results = run_kfold_calibration(
                 wrapper=wrapper,
                 loader=loader,
-                novel_states=novel_states,
+                novel_data=novel_data,
                 paths=paths,
                 args=args,
                 config_name=config_name,
                 mode=mode,
                 metric=metric,
-                is_validation=True,
+                use_trajectories=use_trajectories,
             )
+        else:
+            # Standard calibration (60/20 split)
+            calibration = run_calibration(
+                wrapper=wrapper,
+                loader=loader,
+                novel_states=novel_data,
+                paths=paths,
+                args=args,
+                config_name=config_name,
+                mode=mode,
+                metric=metric,
+                is_validation=False,
+            )
+            
+            # Phase 2: Validation (20 examples)
+            if not args.dry_run and not args.limit:
+                validation_result = run_calibration(
+                    wrapper=wrapper,
+                    loader=loader,
+                    novel_states=novel_data,
+                    paths=paths,
+                    args=args,
+                    config_name=config_name,
+                    mode=mode,
+                    metric=metric,
+                    is_validation=True,
+                )
         
         # Generate plots
         generate_plots(calibration, paths)
@@ -689,7 +982,7 @@ def main():
         results = run_inference(
             wrapper=wrapper,
             loader=loader,
-            novel_states=novel_states,
+            novel_states=novel_data,
             calibration=calibration,
             paths=paths,
             args=args,
