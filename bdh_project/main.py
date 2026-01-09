@@ -184,8 +184,8 @@ Examples:
         help="Cache full trajectory (all chunks) for streaming-level accuracy at cached-level speed"
     )
     parser.add_argument(
-        "--stride", type=int, default=5,
-        help="Sub-sampling stride for full trajectory (save every N chunks). Default: 5"
+        "--stride", type=int, default=20,
+        help="Sub-sampling stride for full trajectory (save every N chunks). Default: 20"
     )
     
     return parser.parse_args()
@@ -570,14 +570,16 @@ def run_kfold_calibration(
                     )
                     
                     if is_trajectory:
-                        # Use perturbation mode with cached FINAL state as baseline
-                        final_baseline = novel_info[-1] if isinstance(novel_info, list) else novel_info
+                        # Use EARLY checkpoint comparison (faster + backstory effect visible)
+                        checkpoint_idx = min(10, len(novel_info) - 1)
                         velocity = wrapper.compute_perturbation(
                             backstory_text=example['content'],
                             novel_path=novel_path,
                             verbose=False,
                             metric=metric,
-                            novel_state_baseline=final_baseline,
+                            baseline_trajectory=novel_info,
+                            checkpoint_idx=checkpoint_idx,
+                            stride=args.stride,
                         )
                     else:
                         velocity = wrapper.compute_velocity_from_states(
@@ -658,14 +660,16 @@ def run_kfold_calibration(
                     )
                     
                     if is_trajectory:
-                        # Use perturbation mode with cached FINAL state as baseline
-                        final_baseline = novel_info[-1] if isinstance(novel_info, list) else novel_info
+                        # Use EARLY checkpoint comparison (faster + backstory effect visible)
+                        checkpoint_idx = min(10, len(novel_info) - 1)
                         velocity = wrapper.compute_perturbation(
                             backstory_text=example['content'],
                             novel_path=novel_path,
                             verbose=False,
                             metric=metric,
-                            novel_state_baseline=final_baseline,
+                            baseline_trajectory=novel_info,
+                            checkpoint_idx=checkpoint_idx,
+                            stride=args.stride,
                         )
                     else:
                         velocity = wrapper.compute_velocity_from_states(
@@ -858,13 +862,15 @@ def run_ensemble_calibration(
             else:
                 if is_trajectory:
                     # Use perturbation mode with cached FINAL state as baseline
-                    final_baseline = novel_data[-1] if isinstance(novel_data, list) else novel_data
+                    checkpoint_idx = min(10, len(novel_data) - 1)
                     velocity = wrapper.compute_perturbation(
                         backstory_text=example['content'],
                         novel_path=novel_path,
                         verbose=False,
                         metric=metric,
-                        novel_state_baseline=final_baseline,
+                        baseline_trajectory=novel_data,
+                        checkpoint_idx=checkpoint_idx,
+                        stride=args.stride,
                     )
                 else:
                     velocity = wrapper.compute_velocity_from_states(
@@ -1077,16 +1083,19 @@ def run_calibration(
                     
                     # Compute velocity against cached novel state
                     if use_trajectories:
-                        # Use perturbation mode with cached FINAL state as baseline
-                        # This re-reads novel ONCE per example (necessary for correct measurement)
+                        # Use EARLY checkpoint comparison (faster + backstory effect visible)
+                        # checkpoint_idx=10 with stride=5 means comparing at chunk ~50
+                        # This is ~5x faster than final comparison AND more accurate
                         novel_path = loader.get_book_path(book_name)
-                        final_baseline = novel_state[-1] if isinstance(novel_state, list) else novel_state
+                        checkpoint_idx = min(10, len(novel_state) - 1)  # Use checkpoint 10 or last if shorter
                         velocity = wrapper.compute_perturbation(
                             backstory_text=example['content'],
                             novel_path=novel_path,
                             verbose=False,
                             metric=metric,
-                            novel_state_baseline=final_baseline,
+                            baseline_trajectory=novel_state,  # Full trajectory
+                            checkpoint_idx=checkpoint_idx,
+                            stride=args.stride,
                         )
                     else:
                         velocity = wrapper.compute_velocity_from_states(
@@ -1245,15 +1254,17 @@ def run_inference(
                         
                         # Compute velocity (handle both trajectories and single states)
                         if is_trajectory:
-                            # Use perturbation mode with cached FINAL state as baseline
+                            # Use EARLY checkpoint comparison (faster + backstory effect visible)
                             novel_path = loader.get_book_path(book_name)
-                            final_baseline = novel_data[-1] if isinstance(novel_data, list) else novel_data
+                            checkpoint_idx = min(10, len(novel_data) - 1)
                             velocity = wrapper.compute_perturbation(
                                 backstory_text=example['content'],
                                 novel_path=novel_path,
                                 verbose=False,
                                 metric=metric,
-                                novel_state_baseline=final_baseline,
+                                baseline_trajectory=novel_data,
+                                checkpoint_idx=checkpoint_idx,
+                                stride=args.stride,
                             )
                         else:
                             # Use single state velocity

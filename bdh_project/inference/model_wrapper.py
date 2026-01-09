@@ -608,6 +608,10 @@ class BDHReasoningWrapper:
         verbose: bool = False,
         metric: str = "cosine",
         novel_state_baseline: Optional[RecurrentState] = None,  # Use cached if provided
+        max_chunks: Optional[int] = None,  # Early stop for speed
+        baseline_trajectory: Optional[List] = None,  # Use trajectory for checkpoint comparison
+        checkpoint_idx: int = -1,  # Which checkpoint to compare at (-1 = final)
+        stride: int = 5,  # Stride used for trajectory
     ) -> float:
         """
         Measure how much the backstory perturbs the novel's trajectory.
@@ -622,12 +626,23 @@ class BDHReasoningWrapper:
             verbose: Show progress
             metric: Distance metric to use
             novel_state_baseline: Pre-computed baseline state (if cached)
+            max_chunks: Maximum chunks to process (for early stopping)
+            baseline_trajectory: Full cached trajectory for checkpoint comparison
+            checkpoint_idx: Which checkpoint to compare at (-1 = final, 2 = early)
+            stride: Stride used when caching trajectory
             
         Returns:
             perturbation: How much backstory changes novel processing
         """
-        # 1. Get or compute baseline (novel alone)
-        if novel_state_baseline is None:
+        # 1. Determine baseline state
+        if baseline_trajectory is not None and checkpoint_idx >= 0:
+            # Use specific checkpoint from trajectory
+            if checkpoint_idx < len(baseline_trajectory):
+                novel_state_baseline = baseline_trajectory[checkpoint_idx]
+                # Set max_chunks to match checkpoint position
+                if max_chunks is None:
+                    max_chunks = checkpoint_idx * stride + 1
+        elif novel_state_baseline is None:
             novel_state_baseline = self.compute_novel_state(novel_path, verbose=verbose)
         
         # 2. Compute perturbed (backstory -> novel)
@@ -645,8 +660,17 @@ class BDHReasoningWrapper:
         desc = f"Computing perturbed state..."
         chunk_iter = tqdm(chunks, desc=desc, leave=False) if verbose else chunks
         
+        # Track MIN perturbation over the path
+        # Logic: Consistent backstory → at least ONE chunk matches → min is LOW
+        #        Contradictory backstory → NO chunk matches → min is HIGH
+        min_perturbation = float('inf')
+        
         with self.amp_context:
             for chunk_idx, chunk in enumerate(chunk_iter):
+                # Early stop for speed
+                if max_chunks is not None and chunk_idx >= max_chunks:
+                    break
+                    
                 _, state, _ = self.model(
                     chunk,
                     state=state,
@@ -654,10 +678,34 @@ class BDHReasoningWrapper:
                     return_rho_update=True,
                 )
                 
+                # Check perturbation at every stride if we have a trajectory
+                if baseline_trajectory is not None and chunk_idx % stride == 0:
+                    # Find corresponding baseline state
+                    # trajectory stores state at: 0, stride, 2*stride...
+                    traj_idx = chunk_idx // stride
+                    if traj_idx < len(baseline_trajectory):
+                        baseline = baseline_trajectory[traj_idx]
+                        if hasattr(baseline, 'to_device'):
+                            baseline.to_device(state.rho_matrix.device)
+                            
+                        dist = self.compute_velocity_from_states(
+                            baseline, state, metric=metric
+                        )
+                        if dist < min_perturbation:
+                            min_perturbation = dist
+                
                 if chunk_idx % 10 == 0:
                     state.detach()
         
-        # 3. Compare baseline vs perturbed
+        # Move baseline to device if needed (for final comparison fallback)
+        if hasattr(novel_state_baseline, 'to_device'):
+            novel_state_baseline.to_device(state.rho_matrix.device)
+
+        # If we tracked trajectory, return min (best match)
+        if baseline_trajectory is not None:
+            return min_perturbation if min_perturbation != float('inf') else 1.0
+            
+        # Otherwise fall back to final state comparison
         return self.compute_velocity_from_states(
             novel_state_baseline,
             state,
