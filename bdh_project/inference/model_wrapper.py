@@ -332,6 +332,8 @@ class BDHReasoningWrapper:
         
         if aggregation == "max":
             return max(velocities)
+        elif aggregation == "min":
+            return min(velocities)
         elif aggregation == "mean":
             return float(np.mean(velocities))
         elif aggregation == "weighted":

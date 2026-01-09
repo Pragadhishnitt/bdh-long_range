@@ -1056,6 +1056,7 @@ def run_calibration(
                             backstory_state,
                             novel_state, # This is a list of states
                             metric=metric,
+                            aggregation="min",
                         )
                     else:
                         velocity = wrapper.compute_velocity_from_states(
