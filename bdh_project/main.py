@@ -571,7 +571,7 @@ def run_kfold_calibration(
                     
                     if is_trajectory:
                         velocity = wrapper.compute_trajectory_velocity(
-                            backstory_state, novel_info, metric=metric
+                            backstory_state, novel_info, metric=metric, aggregation="min"
                         )
                     else:
                         velocity = wrapper.compute_velocity_from_states(
@@ -653,7 +653,7 @@ def run_kfold_calibration(
                     
                     if is_trajectory:
                         velocity = wrapper.compute_trajectory_velocity(
-                            backstory_state, novel_info, metric=metric
+                            backstory_state, novel_info, metric=metric, aggregation="min"
                         )
                     else:
                         velocity = wrapper.compute_velocity_from_states(
@@ -704,6 +704,8 @@ def run_kfold_calibration(
         if ensemble_mode:
             print(f"    Divergence Threshold: {divergence_cal_fold.optimal_threshold:.6f}")
         print(f"    Train Acc: {fold_calibration.train_accuracy:.2%}, F1: {fold_calibration.f1:.4f}")
+        print(f"    Consistent μ={fold_calibration.consistent_mean:.4f}, σ={fold_calibration.consistent_std:.4f}")
+        print(f"    Contradict μ={fold_calibration.contradict_mean:.4f}, σ={fold_calibration.contradict_std:.4f}")
         print(f"    Val Acc: {val_accuracy:.2%}")
     
     # Aggregate results
@@ -845,7 +847,7 @@ def run_ensemble_calibration(
                 if is_trajectory:
                     # Use trajectory-based velocity
                     velocity = wrapper.compute_trajectory_velocity(
-                        backstory_state, novel_data, metric=metric
+                        backstory_state, novel_data, metric=metric, aggregation="min"
                     )
                 else:
                     velocity = wrapper.compute_velocity_from_states(
@@ -901,6 +903,8 @@ def run_ensemble_calibration(
     print(f"  Threshold: {velocity_cal.optimal_threshold:.6f}")
     print(f"  Accuracy: {velocity_cal.train_accuracy:.2%}")
     print(f"  F1: {velocity_cal.f1:.4f}")
+    print(f"  Consistent μ={velocity_cal.consistent_mean:.4f}, σ={velocity_cal.consistent_std:.4f}")
+    print(f"  Contradict μ={velocity_cal.contradict_mean:.4f}, σ={velocity_cal.contradict_std:.4f}")
     
     print("\n" + "-"*40)
     print("HYPOTHESIS B: Embedding Divergence")
@@ -908,6 +912,8 @@ def run_ensemble_calibration(
     print(f"  Threshold: {divergence_cal.optimal_threshold:.6f}")
     print(f"  Accuracy: {divergence_cal.train_accuracy:.2%}")
     print(f"  F1: {divergence_cal.f1:.4f}")
+    print(f"  Consistent μ={divergence_cal.consistent_mean:.4f}, σ={divergence_cal.consistent_std:.4f}")
+    print(f"  Contradict μ={divergence_cal.contradict_mean:.4f}, σ={divergence_cal.contradict_std:.4f}")
     
     print("\n" + "-"*40)
     print("HYPOTHESIS C: Perplexity")
@@ -915,6 +921,8 @@ def run_ensemble_calibration(
     print(f"  Threshold: {perplexity_cal.optimal_threshold:.6f}")
     print(f"  Accuracy: {perplexity_cal.train_accuracy:.2%}")
     print(f"  F1: {perplexity_cal.f1:.4f}")
+    print(f"  Consistent μ={perplexity_cal.consistent_mean:.4f}, σ={perplexity_cal.consistent_std:.4f}")
+    print(f"  Contradict μ={perplexity_cal.contradict_mean:.4f}, σ={perplexity_cal.contradict_std:.4f}")
     
     # Compute ensemble accuracy (majority vote)
     ensemble_cal = EnsembleCalibration(
@@ -1220,6 +1228,7 @@ def run_inference(
                                 backstory_state,
                                 novel_data,
                                 metric=metric,
+                                aggregation="min",
                             )
                         else:
                             # Use single state velocity
