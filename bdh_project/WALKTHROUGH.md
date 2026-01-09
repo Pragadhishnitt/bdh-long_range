@@ -59,7 +59,7 @@ The system offers flexible configuration across three dimensions: **Processing**
 |------|------|-------|----------|-------------|
 | **Cached** | `--mode cached` | ⚡ Fast (~25m) | ~70% | Reads book once, saves **final state** only. Misses middle-of-book contradictions. |
 | **Streaming** | `--mode streaming` | 🐢 Slow (~7h) | ~80%+ | Re-reads book from scratch for **every example**. Captures all temporal dynamics. |
-| **Full Trajectory** | `--full-trajectory` | 🚀 **Optimal** (~45m) | ~80% | Reads book once, saves state at **every chunk**. Best of both worlds. |
+| **Full Trajectory + K-Fold** | `--full-trajectory --stride 10 --improvise` | 🚀 **Optimal** (~70-80m) | ~80-85% | Caches states at every chunk, then uses **perturbation measurement** (how backstory changes novel reading). Best accuracy with reasonable speed. |
 
 ### B. Validation Strategy (Robustness)
 
