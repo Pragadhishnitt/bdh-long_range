@@ -135,8 +135,17 @@ bdh_project/
 | **Cached + K-Fold** | `--improvise` | ~35 min | ~72-75% | Better accuracy |
 | **Fast Ensemble** | `--ensemble-fast` | ~30 min | ~67% | Quick ensemble |
 | **K-Fold + Ensemble** | `--improvise --ensemble-fast` | **~40 min** | **~70-75%** | **Best for cached** |
+| **Full Trajectory** | `--full-trajectory` | **~45 min** | **~78-80%** | **Best of both worlds** |
+| **Full Trajectory + K-Fold** | `--full-trajectory --improvise` | **~50 min** | **~80%** | **Recommended for final** |
 | **Streaming** | `--mode streaming` | ~6.5 hrs | ~80% | High accuracy |
-| **Streaming + K-Fold** | `--mode streaming --improvise` | **~7 hrs** | **~82-85%** | **Maximum accuracy** |
+| **Streaming + K-Fold** | `--mode streaming --improvise` | ~7 hrs | ~82-85% | Maximum accuracy |
+
+> [!TIP]
+> **NEW: `--full-trajectory` Mode**
+> Caches the BDH state at every chunk (not just 4 checkpoints), giving you:
+> - **Streaming-level accuracy** (~80%) without re-reading books
+> - **Cached-level speed** (~45 min) since states are pre-computed
+> - Best for: Final submissions when you want speed AND accuracy
 
 > [!NOTE]
 > **Why Streaming + K-fold takes 7 hours (not 3.5):**

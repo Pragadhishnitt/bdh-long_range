@@ -241,6 +241,58 @@ class BDHReasoningWrapper:
         return checkpoint_states
     
     @torch.no_grad()
+    def compute_full_trajectory(
+        self,
+        novel_path: Path,
+        verbose: bool = True,
+    ) -> List:
+        """
+        Compute states at EVERY chunk throughout the novel.
+        Used for --full-trajectory mode to get streaming-level accuracy
+        with cached-level speed.
+        
+        Args:
+            novel_path: Path to novel text file
+            verbose: Show progress bar
+            
+        Returns:
+            states: List of RecurrentState objects, one per chunk
+        """
+        # Load and tokenize novel
+        with open(novel_path, 'r', encoding='utf-8', errors='replace') as f:
+            novel_text = f.read()
+        
+        tokens = self._tokenize(novel_text)
+        chunks = self._chunk_tokens(tokens)
+        total_chunks = len(chunks)
+        
+        all_states = []
+        state = self.model.reset_state()
+        
+        desc = f"Computing full trajectory: {novel_path.name[:20]}... ({total_chunks} chunks)"
+        chunk_iter = tqdm(chunks, desc=desc, leave=False) if verbose else chunks
+        
+        with self.amp_context:
+            for chunk_idx, chunk in enumerate(chunk_iter):
+                _, state, _ = self.model(
+                    chunk,
+                    state=state,
+                    return_state=True,
+                    return_rho_update=True,
+                )
+                
+                # Save state at every chunk
+                # Clone and move to CPU to save GPU memory
+                state_clone = state.clone()
+                state_clone.to_cpu()
+                all_states.append(state_clone)
+                
+                if chunk_idx % 10 == 0:
+                    state.detach()
+        
+        return all_states
+    
+    @torch.no_grad()
     def compute_trajectory_velocity(
         self,
         backstory_state: RecurrentState,

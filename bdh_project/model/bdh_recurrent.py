@@ -50,6 +50,32 @@ class RecurrentState:
             position_offset=self.position_offset,
             layer_states={k: v.clone() for k, v in self.layer_states.items()} if self.layer_states else None
         )
+    
+    def to_cpu(self) -> 'RecurrentState':
+        """Move all tensors to CPU (for caching)."""
+        if self.rho_matrix is not None:
+            self.rho_matrix = self.rho_matrix.cpu()
+        if self.prev_rho is not None:
+            self.prev_rho = self.prev_rho.cpu()
+        if self.layer_states is not None:
+            self.layer_states = {
+                k: v.cpu() if v is not None else None 
+                for k, v in self.layer_states.items()
+            }
+        return self
+    
+    def to_device(self, device: torch.device) -> 'RecurrentState':
+        """Move all tensors to specified device."""
+        if self.rho_matrix is not None:
+            self.rho_matrix = self.rho_matrix.to(device)
+        if self.prev_rho is not None:
+            self.prev_rho = self.prev_rho.to(device)
+        if self.layer_states is not None:
+            self.layer_states = {
+                k: v.to(device) if v is not None else None 
+                for k, v in self.layer_states.items()
+            }
+        return self
 
 
 class RecurrentBDH(nn.Module):

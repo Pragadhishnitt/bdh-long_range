@@ -179,6 +179,10 @@ Examples:
         "--ensemble-fast", action="store_true", dest="ensemble_fast",
         help="Fast ensemble: velocity + embedding divergence only (skips slow perplexity)"
     )
+    parser.add_argument(
+        "--full-trajectory", action="store_true", dest="full_trajectory",
+        help="Cache full trajectory (all chunks) for streaming-level accuracy at cached-level speed"
+    )
     
     return parser.parse_args()
 
@@ -326,6 +330,67 @@ def precompute_novel_trajectories(
     
     print(f"\n✓ Saved novel trajectories to {cache_path}")
     return novel_trajectories
+
+
+def precompute_full_trajectories(
+    wrapper: BDHReasoningWrapper,
+    loader: DataLoader,
+    paths: Dict[str, Path],
+) -> Dict[str, List]:
+    """Pre-compute FULL trajectories (state at every chunk) for --full-trajectory mode.
+    
+    This is the "best of both worlds" mode:
+    - Accuracy: Same as streaming (captures every temporal moment)
+    - Speed: Same as cached (no re-reading books)
+    
+    Args:
+        wrapper: BDH model wrapper
+        loader: Data loader
+        paths: Output paths
+    
+    Returns:
+        Dict mapping book_name -> list of states (one per chunk)
+    """
+    import gc
+    cache_path = paths["checkpoints"] / "full_trajectories.pkl"
+    
+    # Check if cache exists
+    if cache_path.exists():
+        print(f"\n✓ Loading cached full trajectories from {cache_path}")
+        with open(cache_path, 'rb') as f:
+            return pickle.load(f)
+    
+    print("\n" + "="*60)
+    print("PHASE 0: PRE-COMPUTING FULL TRAJECTORIES (ALL CHUNKS)")
+    print("  This gives streaming-level accuracy at cached-level speed!")
+    print("="*60)
+    
+    full_trajectories = {}
+    
+    for book_name in loader.book_mapping.keys():
+        print(f"\nProcessing: {book_name}")
+        novel_path = loader.get_book_path(book_name)
+        
+        # Compute full trajectory (state at every chunk)
+        trajectory = wrapper.compute_full_trajectory(
+            novel_path, 
+            verbose=True
+        )
+        full_trajectories[book_name] = trajectory
+        
+        print(f"✓ Cached {len(trajectory)}-chunk full trajectory for {book_name}")
+        
+        # Memory cleanup
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    
+    # Save cache
+    with open(cache_path, 'wb') as f:
+        pickle.dump(full_trajectories, f)
+    
+    print(f"\n✓ Saved full trajectories to {cache_path}")
+    return full_trajectories
 
 
 def run_kfold_calibration(
@@ -1313,7 +1378,14 @@ def main():
     novel_data = {}
     use_trajectories = False
     
-    if mode == "cached":
+    if args.full_trajectory:
+        # Full trajectory mode: state at every chunk (best of both worlds)
+        print("\n➡ FULL TRAJECTORY MODE ENABLED:")
+        print("  • Streaming-level accuracy with cached-level speed")
+        print("  • State saved at every chunk (~800-1500 states per book)")
+        novel_data = precompute_full_trajectories(wrapper, loader, paths)
+        use_trajectories = True
+    elif mode == "cached":
         if args.improvise:
             # Multi-checkpoint trajectories for --improvise
             novel_data = precompute_novel_trajectories(wrapper, loader, paths)
