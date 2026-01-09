@@ -49,7 +49,41 @@ GRAND TOTAL: ~109,250 forward pass operations
 
 ---
 
-## 3. Checkpoint Saving
+## 3. System Modes Explained
+
+The system offers flexible configuration across three dimensions: **Processing**, **Validation**, and **Prediction**.
+
+### A. Processing Modes (Speed vs. Accuracy)
+
+| Mode | Flag | Speed | Accuracy | Description |
+|------|------|-------|----------|-------------|
+| **Cached** | `--mode cached` | ⚡ Fast (~25m) | ~70% | Reads book once, saves **final state** only. Misses middle-of-book contradictions. |
+| **Streaming** | `--mode streaming` | 🐢 Slow (~7h) | ~80%+ | Re-reads book from scratch for **every example**. Captures all temporal dynamics. |
+| **Full Trajectory** | `--full-trajectory` | 🚀 **Optimal** (~45m) | ~80% | Reads book once, saves state at **every chunk**. Best of both worlds. |
+
+### B. Validation Strategy (Robustness)
+
+| Strategy | Flag | Description |
+|----------|------|-------------|
+| **Standard** | (default) | Train on 60, Test on 20. Fast but high variance. |
+| **K-Fold** | `--improvise` | 4-Fold Cross-Validation. Rotates train/test splits. **Highly recommended** for stable thresholds. |
+
+### C. Prediction Logic (Intelligence)
+
+| Logic | Flag | Description |
+|-------|------|-------------|
+| **Velocity** | (default) | Checks rate of memory change. Simple but noisy. |
+| **Ensemble** | `--ensemble-fast` | **Velocity + Divergence**. Majority vote. "Free" accuracy boost. |
+| **Full Ensemble** | `--ensemble` | Velocity + Divergence + Perplexity. Slower, slightly better. |
+
+### 🏆 Recommended Configurations
+
+1.  **Fast Iteration**: `python main.py --full-trajectory --ensemble-fast`
+2.  **Final Submission**: `python main.py --full-trajectory --improvise --ensemble-fast`
+
+---
+
+## 4. Checkpoint Saving
 
 ### Current Implementation
 
@@ -84,7 +118,7 @@ if (i + 1) % 10 == 0:  # Every 10 examples
 
 ---
 
-## 7. Pipeline Architecture: Why Two Files?
+## 8. Pipeline Architecture: Why Two Files?
 
 | File | Role | What it does |
 |------|------|--------------|
@@ -97,7 +131,7 @@ if (i + 1) % 10 == 0:  # Every 10 examples
 
 ---
 
-## 4. Regularization Techniques
+## 5. Regularization Techniques
 
 ### 4.1 Dropout
 ```python
@@ -137,7 +171,7 @@ Only positive activations survive, providing implicit regularization.
 
 ---
 
-## 5. Ensembling Strategy
+## 6. Ensembling Strategy
 
 ### Planned Approach (Not Yet Implemented)
 
@@ -171,7 +205,7 @@ score = (
 
 ---
 
-## 6. Architecture Diagrams
+## 7. Architecture Diagrams
 
 ### System Flow
 ```mermaid
@@ -224,7 +258,7 @@ flowchart LR
 
 ---
 
-## 7. Implementation Status
+## 9. Implementation Status
 
 ### ✅ Completed Features
 | Component | Status | Notes |
@@ -250,7 +284,7 @@ flowchart LR
 
 ---
 
-## 8. Usage Examples
+## 10. Usage Examples
 
 ### Standard Execution (Cached Mode)
 ```bash

@@ -332,6 +332,42 @@ def precompute_novel_trajectories(
     return novel_trajectories
 
 
+def trajectory_worker(args_tuple):
+    """Worker function for parallel trajectory computation."""
+    book_name, gpu_id, model_config, inference_config, base_path = args_tuple
+    
+    # Set device
+    try:
+        device = torch.device(f"cuda:{gpu_id}")
+        
+        # Re-initialize loader and wrapper in this process
+        # We need to re-import here to ensure clean state in spawn context
+        from utils import DataLoader
+        from inference import BDHReasoningWrapper
+        
+        loader = DataLoader(base_path=base_path)
+        loader.load_train() # Need to load data to get path
+        novel_path = loader.get_book_path(book_name)
+        
+        # Initialize wrapper on specific GPU
+        wrapper = BDHReasoningWrapper(
+            model_config=model_config,
+            inference_config=inference_config,
+            device=device
+        )
+        
+        # Compute trajectory
+        trajectory = wrapper.compute_full_trajectory(novel_path, verbose=True)
+        
+        # Move to CPU before returning to avoid CUDA IPC issues
+        trajectory = [state.to_cpu() for state in trajectory]
+        
+        return book_name, trajectory
+    except Exception as e:
+        print(f"Error in worker for {book_name}: {e}")
+        return book_name, []
+
+
 def precompute_full_trajectories(
     wrapper: BDHReasoningWrapper,
     loader: DataLoader,
@@ -367,23 +403,52 @@ def precompute_full_trajectories(
     
     full_trajectories = {}
     
-    for book_name in loader.book_mapping.keys():
-        print(f"\nProcessing: {book_name}")
-        novel_path = loader.get_book_path(book_name)
+    # Check for multi-GPU
+    if torch.cuda.device_count() > 1:
+        print(f"\n✓ Detected {torch.cuda.device_count()} GPUs - Enabling parallel processing")
+        import torch.multiprocessing as mp
         
-        # Compute full trajectory (state at every chunk)
-        trajectory = wrapper.compute_full_trajectory(
-            novel_path, 
-            verbose=True
-        )
-        full_trajectories[book_name] = trajectory
+        books = list(loader.book_mapping.keys())
+        gpu_count = torch.cuda.device_count()
         
-        print(f"✓ Cached {len(trajectory)}-chunk full trajectory for {book_name}")
+        tasks = []
+        for i, book in enumerate(books):
+            gpu_id = i % gpu_count
+            tasks.append((book, gpu_id, wrapper.model_config, wrapper.inference_config, loader.base_path))
         
-        # Memory cleanup
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        print(f"  Distributing {len(books)} books across {gpu_count} GPUs...")
+        
+        # Use spawn context for CUDA compatibility
+        ctx = mp.get_context('spawn')
+        with ctx.Pool(gpu_count) as pool:
+            results = pool.map(trajectory_worker, tasks)
+            
+        for book_name, trajectory in results:
+            if trajectory:
+                full_trajectories[book_name] = trajectory
+                print(f"✓ Cached {len(trajectory)}-chunk full trajectory for {book_name}")
+            else:
+                print(f"⚠ Failed to compute trajectory for {book_name}")
+                
+    else:
+        # Single GPU (Sequential)
+        for book_name in loader.book_mapping.keys():
+            print(f"\nProcessing: {book_name}")
+            novel_path = loader.get_book_path(book_name)
+            
+            # Compute full trajectory (state at every chunk)
+            trajectory = wrapper.compute_full_trajectory(
+                novel_path, 
+                verbose=True
+            )
+            full_trajectories[book_name] = trajectory
+            
+            print(f"✓ Cached {len(trajectory)}-chunk full trajectory for {book_name}")
+            
+            # Memory cleanup
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
     
     # Save cache
     with open(cache_path, 'wb') as f:
@@ -1302,6 +1367,10 @@ def main():
     print(f"  Model: {config_name} ({model_config.n_layer} layers)")
     print(f"  Parameters: {model_config.estimate_params():,}")
     print(f"  Device: {device}")
+    if torch.cuda.is_available():
+        print(f"  GPU Count: {torch.cuda.device_count()}")
+        for i in range(torch.cuda.device_count()):
+            print(f"    - GPU {i}: {torch.cuda.get_device_name(i)}")
     print(f"  Chunk size: {inference_config.chunk_size}")
     print(f"  Damping: {inference_config.damping}")
     
