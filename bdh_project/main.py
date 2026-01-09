@@ -183,6 +183,10 @@ Examples:
         "--full-trajectory", action="store_true", dest="full_trajectory",
         help="Cache full trajectory (all chunks) for streaming-level accuracy at cached-level speed"
     )
+    parser.add_argument(
+        "--stride", type=int, default=5,
+        help="Sub-sampling stride for full trajectory (save every N chunks). Default: 5"
+    )
     
     return parser.parse_args()
 
@@ -334,7 +338,7 @@ def precompute_novel_trajectories(
 
 def trajectory_worker(args_tuple):
     """Worker function for parallel trajectory computation."""
-    book_name, gpu_id, model_config, inference_config, base_path = args_tuple
+    book_name, gpu_id, model_config, inference_config, base_path, stride = args_tuple
     
     # Set device
     try:
@@ -357,7 +361,7 @@ def trajectory_worker(args_tuple):
         )
         
         # Compute trajectory
-        trajectory = wrapper.compute_full_trajectory(novel_path, verbose=True)
+        trajectory = wrapper.compute_full_trajectory(novel_path, verbose=True, stride=stride)
         
         # Move to CPU before returning to avoid CUDA IPC issues
         trajectory = [state.to_cpu() for state in trajectory]
@@ -372,6 +376,7 @@ def precompute_full_trajectories(
     wrapper: BDHReasoningWrapper,
     loader: DataLoader,
     paths: Dict[str, Path],
+    stride: int = 5,
 ) -> Dict[str, List]:
     """Pre-compute FULL trajectories (state at every chunk) for --full-trajectory mode.
     
@@ -383,12 +388,13 @@ def precompute_full_trajectories(
         wrapper: BDH model wrapper
         loader: Data loader
         paths: Output paths
+        stride: Save state every N chunks
     
     Returns:
         Dict mapping book_name -> list of states (one per chunk)
     """
     import gc
-    cache_path = paths["checkpoints"] / "full_trajectories.pkl"
+    cache_path = paths["checkpoints"] / f"full_trajectories_stride{stride}.pkl"
     
     # Check if cache exists
     if cache_path.exists():
@@ -399,6 +405,7 @@ def precompute_full_trajectories(
     print("\n" + "="*60)
     print("PHASE 0: PRE-COMPUTING FULL TRAJECTORIES (ALL CHUNKS)")
     print("  This gives streaming-level accuracy at cached-level speed!")
+    print(f"  Stride: {stride} (saving state every {stride} chunks)")
     print("="*60)
     
     full_trajectories = {}
@@ -414,7 +421,7 @@ def precompute_full_trajectories(
         tasks = []
         for i, book in enumerate(books):
             gpu_id = i % gpu_count
-            tasks.append((book, gpu_id, wrapper.model_config, wrapper.inference_config, loader.base_path))
+            tasks.append((book, gpu_id, wrapper.model_config, wrapper.inference_config, loader.base_path, stride))
         
         print(f"  Distributing {len(books)} books across {gpu_count} GPUs...")
         
@@ -439,7 +446,8 @@ def precompute_full_trajectories(
             # Compute full trajectory (state at every chunk)
             trajectory = wrapper.compute_full_trajectory(
                 novel_path, 
-                verbose=True
+                verbose=True,
+                stride=stride
             )
             full_trajectories[book_name] = trajectory
             
@@ -1452,7 +1460,7 @@ def main():
         print("\n➡ FULL TRAJECTORY MODE ENABLED:")
         print("  • Streaming-level accuracy with cached-level speed")
         print("  • State saved at every chunk (~800-1500 states per book)")
-        novel_data = precompute_full_trajectories(wrapper, loader, paths)
+        novel_data = precompute_full_trajectories(wrapper, loader, paths, stride=args.stride)
         use_trajectories = True
     elif mode == "cached":
         if args.improvise:

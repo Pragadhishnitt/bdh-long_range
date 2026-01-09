@@ -245,6 +245,7 @@ class BDHReasoningWrapper:
         self,
         novel_path: Path,
         verbose: bool = True,
+        stride: int = 5,  # Save state every 5 chunks to save memory
     ) -> List:
         """
         Compute states at EVERY chunk throughout the novel.
@@ -254,6 +255,7 @@ class BDHReasoningWrapper:
         Args:
             novel_path: Path to novel text file
             verbose: Show progress bar
+            stride: Save state every N chunks (default 5) to prevent OOM
             
         Returns:
             states: List of RecurrentState objects, one per chunk
@@ -281,11 +283,12 @@ class BDHReasoningWrapper:
                     return_rho_update=True,
                 )
                 
-                # Save state at every chunk
-                # Clone and move to CPU to save GPU memory
-                state_clone = state.clone()
-                state_clone.to_cpu()
-                all_states.append(state_clone)
+                # Save state every stride chunks
+                if chunk_idx % stride == 0:
+                    # Clone, DETACH (critical!), and move to CPU
+                    state_clone = state.clone().detach()
+                    state_clone.to_cpu()
+                    all_states.append(state_clone)
                 
                 if chunk_idx % 10 == 0:
                     state.detach()
