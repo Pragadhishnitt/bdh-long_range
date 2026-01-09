@@ -130,6 +130,10 @@ Examples:
         "--ensemble", action="store_true",
         help="Combine all 3 hypotheses: velocity + embedding divergence + perplexity (majority vote)"
     )
+    parser.add_argument(
+        "--ensemble-fast", action="store_true", dest="ensemble_fast",
+        help="Fast ensemble: velocity + embedding divergence only (skips slow perplexity)"
+    )
     
     return parser.parse_args()
 
@@ -480,8 +484,9 @@ class EnsembleCalibration:
     
     # Ensemble results
     ensemble_accuracy: float = 0.0
+    fast_mode: bool = False  # True = 2 hypotheses only
     
-    def predict_ensemble(self, velocity: float, divergence: float, perplexity: float) -> int:
+    def predict_ensemble(self, velocity: float, divergence: float, perplexity: float = 0.0) -> int:
         """Majority vote across 3 hypotheses."""
         votes = []
         
@@ -493,12 +498,25 @@ class EnsembleCalibration:
         if self.divergence_calibration:
             votes.append(1 if divergence < self.divergence_calibration.optimal_threshold else 0)
         
-        # Hypothesis C: Perplexity (lower = consistent)
-        if self.perplexity_calibration:
+        # Hypothesis C: Perplexity (lower = consistent) - skip if fast_mode
+        if self.perplexity_calibration and not self.fast_mode:
             votes.append(1 if perplexity < self.perplexity_calibration.optimal_threshold else 0)
         
-        # Majority vote (2/3)
-        return 1 if sum(votes) >= 2 else 0
+        # Majority vote (2/3 or 2/2)
+        threshold = 2 if len(votes) >= 3 else 1  # Need both to agree for 2-hypothesis
+        return 1 if sum(votes) >= threshold else 0
+    
+    def predict_fast(self, velocity: float, divergence: float) -> int:
+        """Fast ensemble: velocity + divergence only. Both must agree."""
+        vel_vote = 1 if velocity < self.velocity_calibration.optimal_threshold else 0
+        div_vote = 1 if divergence < self.divergence_calibration.optimal_threshold else 0
+        
+        # Both must agree (tie = use velocity as tiebreaker)
+        if vel_vote == div_vote:
+            return vel_vote
+        else:
+            # Tiebreaker: use velocity (primary hypothesis)
+            return vel_vote
 
 
 def run_ensemble_calibration(
@@ -510,10 +528,12 @@ def run_ensemble_calibration(
     config_name: str,
     mode: str = "cached",
     metric: str = "cosine",
+    fast_mode: bool = False,  # If True, skip perplexity (Hypothesis C)
 ) -> EnsembleCalibration:
-    """Run calibration for all 3 ensemble hypotheses."""
+    """Run calibration for ensemble hypotheses."""
+    n_hypotheses = "2" if fast_mode else "3"
     print("\n" + "="*60)
-    print("ENSEMBLE CALIBRATION (3 HYPOTHESES)")
+    print(f"ENSEMBLE CALIBRATION ({n_hypotheses} HYPOTHESES)" + (" [FAST]" if fast_mode else ""))
     print("="*60)
     
     train_examples = loader.get_train_examples()
@@ -595,17 +615,20 @@ def run_ensemble_calibration(
                     backstory_state, novel_state, metric=metric
                 )
             
-            # Hypothesis C: Perplexity
-            perplexity = wrapper.compute_perplexity(
-                backstory_text=example['content'],
-                novel_path=novel_path,
-                max_chunks=5 if args.dry_run else None,  # Limit for speed
-            )
+            # Hypothesis C: Perplexity (skip if fast_mode)
+            perplexity = 0.0
+            if not fast_mode:
+                perplexity = wrapper.compute_perplexity(
+                    backstory_text=example['content'],
+                    novel_path=novel_path,
+                    max_chunks=5 if args.dry_run else None,  # Limit for speed
+                )
             
             # Record all signals
             velocity_cal.add_example(example['id'], velocity, example['label_binary'])
             divergence_cal.add_example(example['id'], divergence, example['label_binary'])
-            perplexity_cal.add_example(example['id'], perplexity, example['label_binary'])
+            if not fast_mode:
+                perplexity_cal.add_example(example['id'], perplexity, example['label_binary'])
             
             pbar.set_postfix({
                 "vel": f"{velocity:.2f}",
@@ -1149,8 +1172,9 @@ def main():
     
     # Phase 1: Calibration
     if run_train:
-        if args.ensemble:
-            # Ensemble mode: calibrate all 3 hypotheses
+        if args.ensemble or args.ensemble_fast:
+            # Ensemble mode: calibrate hypotheses (2 or 3 depending on flag)
+            fast_mode = args.ensemble_fast
             ensemble_calibration = run_ensemble_calibration(
                 wrapper=wrapper,
                 loader=loader,
@@ -1160,6 +1184,7 @@ def main():
                 config_name=config_name,
                 mode=mode,
                 metric=metric,
+                fast_mode=fast_mode,
             )
             # Use velocity calibration as fallback for plots
             calibration = ensemble_calibration.velocity_calibration
