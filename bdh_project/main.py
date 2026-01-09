@@ -1381,6 +1381,8 @@ def main():
             print(f"    - GPU {i}: {torch.cuda.get_device_name(i)}")
     print(f"  Chunk size: {inference_config.chunk_size}")
     print(f"  Damping: {inference_config.damping}")
+    if args.full_trajectory:
+        print(f"  Stride: {args.stride}")
     
     if args.dry_run:
         print(f"  [DRY-RUN] Limit: {args.limit}, Max chunks: {args.max_chunks}")
