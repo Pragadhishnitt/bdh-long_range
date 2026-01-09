@@ -1149,7 +1149,7 @@ def run_inference(
 
 
 def generate_plots(
-    calibration: CalibrationResult,
+    calibration: Union[CalibrationResult, EnsembleCalibration],
     paths: Dict[str, Path],
 ):
     """Generate visualization plots."""
@@ -1159,6 +1159,11 @@ def generate_plots(
     except ImportError:
         print("⚠ matplotlib/seaborn not installed, skipping plots")
         return
+    
+    # Handle ensemble object
+    if isinstance(calibration, EnsembleCalibration):
+        # For plots, we primarily visualize the velocity component
+        calibration = calibration.velocity_calibration
     
     print("\nGenerating plots...")
     
