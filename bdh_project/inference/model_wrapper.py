@@ -296,6 +296,102 @@ class BDHReasoningWrapper:
         return all_states
     
     @torch.no_grad()
+    def compute_trajectory_perturbation(
+        self,
+        backstory_text: str,
+        novel_path: Path,
+        novel_trajectory: List,  # Pre-computed baseline trajectory
+        stride: int = 5,
+        metric: str = "cosine",
+        aggregation: str = "max",
+        verbose: bool = False,
+    ) -> float:
+        """
+        Measure how backstory PERTURBS novel processing at each checkpoint.
+        
+        This is the CORRECT approach:
+        - Baseline: novel_trajectory[i] = state after reading novel chunks 0..i from fresh
+        - Perturbed: state after reading backstory THEN novel chunks 0..i
+        - Compare: distance(baseline[i], perturbed[i])
+        
+        If backstory is CONSISTENT with novel: perturbed ≈ baseline → LOW distance
+        If backstory is CONTRADICTORY: perturbed ≠ baseline → HIGH distance
+        
+        Args:
+            backstory_text: Character backstory
+            novel_path: Path to novel file
+            novel_trajectory: Pre-computed baseline trajectory (from compute_full_trajectory)
+            stride: Must match the stride used to compute novel_trajectory
+            metric: Distance metric ("cosine" or "l2")
+            aggregation: How to combine velocities ("min", "max", "mean")
+            verbose: Show progress
+            
+        Returns:
+            perturbation: Aggregated perturbation across trajectory
+        """
+        import numpy as np
+        
+        # 1. Prime with backstory
+        backstory_state, _ = self.prime_with_backstory(backstory_text, verbose=False)
+        
+        # 2. Read novel starting from backstory state
+        with open(novel_path, 'r', encoding='utf-8', errors='replace') as f:
+            novel_text = f.read()
+        
+        tokens = self._tokenize(novel_text)
+        chunks = self._chunk_tokens(tokens)
+        
+        state = backstory_state.clone()
+        perturbations = []
+        trajectory_idx = 0
+        
+        desc = f"Computing perturbation: {novel_path.name[:20]}..."
+        chunk_iter = tqdm(chunks, desc=desc, leave=False) if verbose else chunks
+        
+        with self.amp_context:
+            for chunk_idx, chunk in enumerate(chunk_iter):
+                _, state, _ = self.model(
+                    chunk,
+                    state=state,
+                    return_state=True,
+                    return_rho_update=True,
+                )
+                
+                # Compare at checkpoints (matching stride)
+                if chunk_idx % stride == 0:
+                    if trajectory_idx < len(novel_trajectory):
+                        baseline_state = novel_trajectory[trajectory_idx]
+                        # Move baseline to device for comparison
+                        if hasattr(baseline_state, 'to_device'):
+                            baseline_state.to_device(state.rho_matrix.device)
+                        
+                        # Compute perturbation (distance between baseline and perturbed)
+                        pert = self.compute_velocity_from_states(
+                            baseline_state,
+                            state,
+                            metric=metric,
+                        )
+                        perturbations.append(pert)
+                        trajectory_idx += 1
+                
+                # Periodic detach for memory
+                if chunk_idx % 10 == 0:
+                    state.detach()
+        
+        if not perturbations:
+            return 0.0
+        
+        # Aggregate
+        if aggregation == "min":
+            return min(perturbations)
+        elif aggregation == "max":
+            return max(perturbations)
+        elif aggregation == "mean":
+            return float(np.mean(perturbations))
+        else:
+            return max(perturbations)
+    
+    @torch.no_grad()
     def compute_trajectory_velocity(
         self,
         backstory_state: RecurrentState,

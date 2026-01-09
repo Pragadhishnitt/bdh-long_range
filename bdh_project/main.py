@@ -570,8 +570,14 @@ def run_kfold_calibration(
                     )
                     
                     if is_trajectory:
-                        velocity = wrapper.compute_trajectory_velocity(
-                            backstory_state, novel_info, metric=metric, aggregation="min"
+                        # CORRECT: Use trajectory perturbation
+                        velocity = wrapper.compute_trajectory_perturbation(
+                            backstory_text=example['content'],
+                            novel_path=novel_path,
+                            novel_trajectory=novel_info,
+                            stride=args.stride,
+                            metric=metric,
+                            aggregation="max",
                         )
                     else:
                         velocity = wrapper.compute_velocity_from_states(
@@ -652,8 +658,14 @@ def run_kfold_calibration(
                     )
                     
                     if is_trajectory:
-                        velocity = wrapper.compute_trajectory_velocity(
-                            backstory_state, novel_info, metric=metric, aggregation="min"
+                        # CORRECT: Use trajectory perturbation
+                        velocity = wrapper.compute_trajectory_perturbation(
+                            backstory_text=example['content'],
+                            novel_path=novel_path,
+                            novel_trajectory=novel_info,
+                            stride=args.stride,
+                            metric=metric,
+                            aggregation="max",
                         )
                     else:
                         velocity = wrapper.compute_velocity_from_states(
@@ -845,9 +857,14 @@ def run_ensemble_calibration(
                 velocity = metrics.max_velocity
             else:
                 if is_trajectory:
-                    # Use trajectory-based velocity
-                    velocity = wrapper.compute_trajectory_velocity(
-                        backstory_state, novel_data, metric=metric, aggregation="min"
+                    # CORRECT: Use trajectory perturbation
+                    velocity = wrapper.compute_trajectory_perturbation(
+                        backstory_text=example['content'],
+                        novel_path=novel_path,
+                        novel_trajectory=novel_data,
+                        stride=args.stride,
+                        metric=metric,
+                        aggregation="max",
                     )
                 else:
                     velocity = wrapper.compute_velocity_from_states(
@@ -1060,11 +1077,16 @@ def run_calibration(
                     
                     # Compute velocity against cached novel state
                     if use_trajectories:
-                        velocity = wrapper.compute_trajectory_velocity(
-                            backstory_state,
-                            novel_state, # This is a list of states
+                        # CORRECT: Use trajectory perturbation
+                        # This measures how backstory CHANGES novel reading
+                        novel_path = loader.get_book_path(book_name)
+                        velocity = wrapper.compute_trajectory_perturbation(
+                            backstory_text=example['content'],
+                            novel_path=novel_path,
+                            novel_trajectory=novel_state,  # This is a list of states
+                            stride=args.stride,
                             metric=metric,
-                            aggregation="min",
+                            aggregation="max",  # max perturbation = contradiction
                         )
                     else:
                         velocity = wrapper.compute_velocity_from_states(
@@ -1223,12 +1245,15 @@ def run_inference(
                         
                         # Compute velocity (handle both trajectories and single states)
                         if is_trajectory:
-                            # Use trajectory-based velocity
-                            velocity = wrapper.compute_trajectory_velocity(
-                                backstory_state,
-                                novel_data,
+                            # CORRECT: Use trajectory perturbation
+                            novel_path = loader.get_book_path(book_name)
+                            velocity = wrapper.compute_trajectory_perturbation(
+                                backstory_text=example['content'],
+                                novel_path=novel_path,
+                                novel_trajectory=novel_data,
+                                stride=args.stride,
                                 metric=metric,
-                                aggregation="min",
+                                aggregation="max",
                             )
                         else:
                             # Use single state velocity
