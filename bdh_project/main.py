@@ -570,16 +570,13 @@ def run_kfold_calibration(
                     )
                     
                     if is_trajectory:
-                        # Use EARLY checkpoint comparison (faster + backstory effect visible)
-                        checkpoint_idx = min(10, len(novel_info) - 1)
-                        velocity = wrapper.compute_perturbation(
-                            backstory_text=example['content'],
-                            novel_path=novel_path,
-                            verbose=False,
+                        # FAST: Compare backstory_state against cached trajectory (no novel re-read!)
+                        # Uses MIN aggregation - find checkpoint where backstory matches best
+                        velocity = wrapper.compute_trajectory_velocity(
+                            backstory_state,
+                            novel_info,
                             metric=metric,
-                            baseline_trajectory=novel_info,
-                            checkpoint_idx=checkpoint_idx,
-                            stride=args.stride,
+                            aggregation="min",  # min = best match
                         )
                     else:
                         velocity = wrapper.compute_velocity_from_states(
@@ -660,16 +657,12 @@ def run_kfold_calibration(
                     )
                     
                     if is_trajectory:
-                        # Use EARLY checkpoint comparison (faster + backstory effect visible)
-                        checkpoint_idx = min(10, len(novel_info) - 1)
-                        velocity = wrapper.compute_perturbation(
-                            backstory_text=example['content'],
-                            novel_path=novel_path,
-                            verbose=False,
+                        # FAST: Compare backstory_state against cached trajectory (no novel re-read!)
+                        velocity = wrapper.compute_trajectory_velocity(
+                            backstory_state,
+                            novel_info,
                             metric=metric,
-                            baseline_trajectory=novel_info,
-                            checkpoint_idx=checkpoint_idx,
-                            stride=args.stride,
+                            aggregation="min",
                         )
                     else:
                         velocity = wrapper.compute_velocity_from_states(
@@ -861,16 +854,12 @@ def run_ensemble_calibration(
                 velocity = metrics.max_velocity
             else:
                 if is_trajectory:
-                    # Use perturbation mode with cached FINAL state as baseline
-                    checkpoint_idx = min(10, len(novel_data) - 1)
-                    velocity = wrapper.compute_perturbation(
-                        backstory_text=example['content'],
-                        novel_path=novel_path,
-                        verbose=False,
+                    # FAST: Compare backstory_state against cached trajectory
+                    velocity = wrapper.compute_trajectory_velocity(
+                        backstory_state,
+                        novel_data,
                         metric=metric,
-                        baseline_trajectory=novel_data,
-                        checkpoint_idx=checkpoint_idx,
-                        stride=args.stride,
+                        aggregation="min",
                     )
                 else:
                     velocity = wrapper.compute_velocity_from_states(
@@ -1083,19 +1072,13 @@ def run_calibration(
                     
                     # Compute velocity against cached novel state
                     if use_trajectories:
-                        # Use EARLY checkpoint comparison (faster + backstory effect visible)
-                        # checkpoint_idx=10 with stride=5 means comparing at chunk ~50
-                        # This is ~5x faster than final comparison AND more accurate
-                        novel_path = loader.get_book_path(book_name)
-                        checkpoint_idx = min(10, len(novel_state) - 1)  # Use checkpoint 10 or last if shorter
-                        velocity = wrapper.compute_perturbation(
-                            backstory_text=example['content'],
-                            novel_path=novel_path,
-                            verbose=False,
+                        # FAST: Compare backstory_state against cached trajectory
+                        # No novel re-read needed - instant comparison!
+                        velocity = wrapper.compute_trajectory_velocity(
+                            backstory_state,
+                            novel_state,  # This is the trajectory list
                             metric=metric,
-                            baseline_trajectory=novel_state,  # Full trajectory
-                            checkpoint_idx=checkpoint_idx,
-                            stride=args.stride,
+                            aggregation="min",
                         )
                     else:
                         velocity = wrapper.compute_velocity_from_states(
@@ -1254,17 +1237,12 @@ def run_inference(
                         
                         # Compute velocity (handle both trajectories and single states)
                         if is_trajectory:
-                            # Use EARLY checkpoint comparison (faster + backstory effect visible)
-                            novel_path = loader.get_book_path(book_name)
-                            checkpoint_idx = min(10, len(novel_data) - 1)
-                            velocity = wrapper.compute_perturbation(
-                                backstory_text=example['content'],
-                                novel_path=novel_path,
-                                verbose=False,
+                            # FAST: Compare backstory_state against cached trajectory
+                            velocity = wrapper.compute_trajectory_velocity(
+                                backstory_state,
+                                novel_data,
                                 metric=metric,
-                                baseline_trajectory=novel_data,
-                                checkpoint_idx=checkpoint_idx,
-                                stride=args.stride,
+                                aggregation="min",
                             )
                         else:
                             # Use single state velocity
