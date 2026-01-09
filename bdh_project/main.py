@@ -19,7 +19,7 @@ import sys
 import pickle
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 from dataclasses import dataclass
 
 import pandas as pd
@@ -42,6 +42,51 @@ from config import (
 from metrics import ConsistencyMetrics, CalibrationResult
 from utils import DataLoader, get_dataset_stats
 from inference import BDHReasoningWrapper
+
+
+@dataclass
+class EnsembleCalibration:
+    """Calibration results for ensemble of 3 hypotheses."""
+    # Individual calibrations
+    velocity_calibration: CalibrationResult = None
+    divergence_calibration: CalibrationResult = None
+    perplexity_calibration: CalibrationResult = None
+    
+    # Ensemble results
+    ensemble_accuracy: float = 0.0
+    fast_mode: bool = False  # True = 2 hypotheses only
+    
+    def predict_ensemble(self, velocity: float, divergence: float, perplexity: float = 0.0) -> int:
+        """Majority vote across 3 hypotheses."""
+        votes = []
+        
+        # Hypothesis A: Velocity (lower = consistent)
+        if self.velocity_calibration:
+            votes.append(1 if velocity < self.velocity_calibration.optimal_threshold else 0)
+        
+        # Hypothesis B: Divergence (lower = consistent)
+        if self.divergence_calibration:
+            votes.append(1 if divergence < self.divergence_calibration.optimal_threshold else 0)
+        
+        # Hypothesis C: Perplexity (lower = consistent) - skip if fast_mode
+        if self.perplexity_calibration and not self.fast_mode:
+            votes.append(1 if perplexity < self.perplexity_calibration.optimal_threshold else 0)
+        
+        # Majority vote (2/3 or 2/2)
+        threshold = 2 if len(votes) >= 3 else 1  # Need both to agree for 2-hypothesis
+        return 1 if sum(votes) >= threshold else 0
+    
+    def predict_fast(self, velocity: float, divergence: float) -> int:
+        """Fast ensemble: velocity + divergence only. Both must agree."""
+        vel_vote = 1 if velocity < self.velocity_calibration.optimal_threshold else 0
+        div_vote = 1 if divergence < self.divergence_calibration.optimal_threshold else 0
+        
+        # Both must agree (tie = use velocity as tiebreaker)
+        if vel_vote == div_vote:
+            return vel_vote
+        else:
+            # Tiebreaker: use velocity (primary hypothesis)
+            return vel_vote
 
 
 def parse_args():
@@ -566,52 +611,23 @@ def run_kfold_calibration(
         json.dump(save_data, f, indent=2)
     print(f"\n✓ Saved K-fold results to {kfold_path}")
     
+    if ensemble_mode:
+        # Create ensemble calibration
+        divergence_cal = CalibrationResult(optimal_threshold=final_divergence_threshold)
+        # Note: We don't have all divergence values here easily unless we collected them
+        # But for inference, we mainly need the threshold
+        
+        ensemble_cal = EnsembleCalibration(
+            velocity_calibration=final_calibration,
+            divergence_calibration=divergence_cal,
+            fast_mode=fast_ensemble,
+        )
+        return ensemble_cal, fold_results
+    
     return final_calibration, fold_results
 
 
-@dataclass
-class EnsembleCalibration:
-    """Calibration results for ensemble of 3 hypotheses."""
-    # Individual calibrations
-    velocity_calibration: CalibrationResult = None
-    divergence_calibration: CalibrationResult = None
-    perplexity_calibration: CalibrationResult = None
-    
-    # Ensemble results
-    ensemble_accuracy: float = 0.0
-    fast_mode: bool = False  # True = 2 hypotheses only
-    
-    def predict_ensemble(self, velocity: float, divergence: float, perplexity: float = 0.0) -> int:
-        """Majority vote across 3 hypotheses."""
-        votes = []
-        
-        # Hypothesis A: Velocity (lower = consistent)
-        if self.velocity_calibration:
-            votes.append(1 if velocity < self.velocity_calibration.optimal_threshold else 0)
-        
-        # Hypothesis B: Divergence (lower = consistent)
-        if self.divergence_calibration:
-            votes.append(1 if divergence < self.divergence_calibration.optimal_threshold else 0)
-        
-        # Hypothesis C: Perplexity (lower = consistent) - skip if fast_mode
-        if self.perplexity_calibration and not self.fast_mode:
-            votes.append(1 if perplexity < self.perplexity_calibration.optimal_threshold else 0)
-        
-        # Majority vote (2/3 or 2/2)
-        threshold = 2 if len(votes) >= 3 else 1  # Need both to agree for 2-hypothesis
-        return 1 if sum(votes) >= threshold else 0
-    
-    def predict_fast(self, velocity: float, divergence: float) -> int:
-        """Fast ensemble: velocity + divergence only. Both must agree."""
-        vel_vote = 1 if velocity < self.velocity_calibration.optimal_threshold else 0
-        div_vote = 1 if divergence < self.divergence_calibration.optimal_threshold else 0
-        
-        # Both must agree (tie = use velocity as tiebreaker)
-        if vel_vote == div_vote:
-            return vel_vote
-        else:
-            # Tiebreaker: use velocity (primary hypothesis)
-            return vel_vote
+
 
 
 def run_ensemble_calibration(
@@ -953,7 +969,7 @@ def run_inference(
     wrapper: BDHReasoningWrapper,
     loader: DataLoader,
     novel_states: Dict[str, any],
-    calibration: CalibrationResult,
+    calibration: Union[CalibrationResult, EnsembleCalibration],
     paths: Dict[str, Path],
     args: argparse.Namespace,
     mode: str = "cached",
@@ -978,6 +994,9 @@ def run_inference(
         try:
             book_name = example['book_name']
             
+            # Determine if ensemble
+            is_ensemble = isinstance(calibration, EnsembleCalibration)
+            
             # Choose processing mode
             if mode == "streaming":
                 # STREAMING: Always stream novels (even for inference)
@@ -989,7 +1008,29 @@ def run_inference(
                     max_chunks=args.max_chunks if args.dry_run else None,
                 )
                 velocity = metrics.max_velocity
-                prediction = calibration.predict(velocity)
+                
+                if is_ensemble:
+                    # Compute divergence for ensemble
+                    novel_state = wrapper.compute_novel_state(novel_path, verbose=False)
+                    backstory_state, _ = wrapper.prime_with_backstory(
+                        example['content'], verbose=False
+                    )
+                    divergence = wrapper.compute_embedding_divergence(
+                        backstory_state, novel_state, metric=metric
+                    )
+                    
+                    if calibration.fast_mode:
+                        prediction = calibration.predict_fast(velocity, divergence)
+                    else:
+                        # Full ensemble (needs perplexity)
+                        perplexity = wrapper.compute_perplexity(
+                             backstory_text=example['content'],
+                             novel_path=novel_path,
+                             max_chunks=5 if args.dry_run else None
+                        )
+                        prediction = calibration.predict_ensemble(velocity, divergence, perplexity)
+                else:
+                    prediction = calibration.predict(velocity)
             else:
                 # CACHED: Use pre-computed states or trajectories
                 if book_name not in novel_states:
@@ -1001,6 +1042,7 @@ def run_inference(
                     
                     # Check if it's a trajectory (list) or single state
                     is_trajectory = isinstance(novel_data, list)
+                    novel_state = novel_data[-1] if is_trajectory else novel_data
                     
                     if args.perturbation:
                         # Perturbation mode
@@ -1014,6 +1056,8 @@ def run_inference(
                             metric=metric,
                             novel_state_baseline=novel_state_baseline,
                         )
+                        # Perturbation doesn't support ensemble usually
+                        prediction = calibration.predict(velocity) if not is_ensemble else 1
                     else:
                         # Standard cached mode
                         # Process only the backstory
@@ -1038,8 +1082,23 @@ def run_inference(
                                 metric=metric,
                             )
                         
-                        # Predict
-                        prediction = calibration.predict(velocity)
+                        if is_ensemble:
+                            divergence = wrapper.compute_embedding_divergence(
+                                backstory_state, novel_state, metric=metric
+                            )
+                            if calibration.fast_mode:
+                                prediction = calibration.predict_fast(velocity, divergence)
+                            else:
+                                # Full ensemble in cached mode
+                                novel_path = loader.get_book_path(book_name)
+                                perplexity = wrapper.compute_perplexity(
+                                    backstory_text=example['content'],
+                                    novel_path=novel_path,
+                                    max_chunks=5 if args.dry_run else None
+                                )
+                                prediction = calibration.predict_ensemble(velocity, divergence, perplexity)
+                        else:
+                            prediction = calibration.predict(velocity)
             
             results.append({
                 "id": example['id'],
