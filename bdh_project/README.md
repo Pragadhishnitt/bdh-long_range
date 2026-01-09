@@ -98,34 +98,23 @@ python main.py --small --mode cached --ensemble
    - If Divergence < Threshold B → Vote Consistent (1)
    - **Decision**: Both must agree (1+1=2). If they disagree, we trust Velocity (primary signal).
 
-### 8. **Full Trajectory Perturbation Mode (Recommended for Final)**
-**Command**: `python main.py --full-trajectory --stride 10 --improvise`
-**Speed**: ~70-80 min total
-**Method**: Combines trajectory caching with perturbation measurement:
+### 8. Full Trajectory Perplexity Mode (Recommended)
 
-**Phase 0: Pre-computation (2-3 min)**
-- Multi-GPU parallel processing (2 books across 2 GPUs)
-- Reads each novel from scratch, saves state every `stride` chunks
-- Caches to `full_trajectories_stride10.pkl`
+**Why**: Velocity metric fails because backstory signal is washed out by the novel (distance ~1.0). Perplexity measures how "surprising" the novel is given the backstory, which is more robust.
 
-**Phase 1: K-Fold Calibration (50-60 min)**
-- For each of 4 folds (60 train / 20 val):
-  - **Baseline**: Uses cached final state (reading novel from fresh)
-  - **Perturbed**: Reads backstory → reads novel → final state
-  - **Perturbation**: `distance(baseline_final, perturbed_final)`
-  - If backstory is **consistent**: minimal change → LOW perturbation (~0.1-0.3)
-  - If backstory is **contradictory**: narrative conflict → HIGH perturbation (~0.7-1.0)
-- Computes optimal threshold per fold
-- Prints: Threshold, Accuracy, F1, μ_consistent, σ_consistent, μ_contradict, σ_contradict
+**Command**:
+```bash
+python main.py --perplexity --improvise
+```
 
-**Phase 2: Test Inference (15-20 min)**
-- Applies median threshold to 60 test examples
-- Saves predictions to `outputs/results.csv`
+**Workflow**:
+1. **Pre-compute**: Caches novel states (fast).
+2. **Calibrate**: Computes perplexity for 80 train examples (~40s/example).
+   - Consistent: Lower perplexity (novel matches backstory)
+   - Contradict: Higher perplexity (novel surprises model)
+3. **Inference**: Predicts for 60 test examples.
 
-**Why This Works**:
-- **Root Cause Fix**: The old approach compared incompatible states (fresh backstory vs accumulated novel)
-- **Correct Approach**: Measures how backstory PERTURBS the model's understanding of the novel
-- **Expected Separation**: Large μ gap (~0.5-0.7) between consistent and contradictory classes
+**Time**: ~60-80 minutes total.
 
 
 ---

@@ -187,6 +187,14 @@ Examples:
         "--stride", type=int, default=20,
         help="Sub-sampling stride for full trajectory (save every N chunks). Default: 20"
     )
+    parser.add_argument(
+        "--perplexity", action="store_true",
+        help="Use perplexity-based classification instead of velocity (slower but potentially more accurate)"
+    )
+    parser.add_argument(
+        "--ppl-chunks", type=int, default=20, dest="ppl_chunks",
+        help="Max chunks for perplexity computation (default: 20 = first ~40k tokens)"
+    )
     
     return parser.parse_args()
 
@@ -569,7 +577,16 @@ def run_kfold_calibration(
                         example['content'], verbose=False
                     )
                     
-                    if is_trajectory:
+                    # Choose metric based on mode
+                    if args.perplexity:
+                        # PERPLEXITY MODE: Measure how "surprising" novel is given backstory
+                        # Lower perplexity = consistent, Higher = contradictory
+                        velocity = wrapper.compute_perplexity(
+                            backstory_text=example['content'],
+                            novel_path=novel_path,
+                            max_chunks=args.ppl_chunks,
+                        )
+                    elif is_trajectory:
                         # FAST: Compare backstory_state against cached trajectory (no novel re-read!)
                         # Uses MIN aggregation - find checkpoint where backstory matches best
                         velocity = wrapper.compute_trajectory_velocity(
@@ -656,7 +673,13 @@ def run_kfold_calibration(
                         example['content'], verbose=False
                     )
                     
-                    if is_trajectory:
+                    if args.perplexity:
+                        velocity = wrapper.compute_perplexity(
+                            backstory_text=example['content'],
+                            novel_path=novel_path,
+                            max_chunks=args.ppl_chunks,
+                        )
+                    elif is_trajectory:
                         # FAST: Compare backstory_state against cached trajectory (no novel re-read!)
                         velocity = wrapper.compute_trajectory_velocity(
                             backstory_state,
@@ -853,7 +876,13 @@ def run_ensemble_calibration(
                 )
                 velocity = metrics.max_velocity
             else:
-                if is_trajectory:
+                if args.perplexity:
+                    velocity = wrapper.compute_perplexity(
+                        backstory_text=example['content'],
+                        novel_path=novel_path,
+                        max_chunks=args.ppl_chunks,
+                    )
+                elif is_trajectory:
                     # FAST: Compare backstory_state against cached trajectory
                     velocity = wrapper.compute_trajectory_velocity(
                         backstory_state,
@@ -1071,7 +1100,13 @@ def run_calibration(
                     )
                     
                     # Compute velocity against cached novel state
-                    if use_trajectories:
+                    if args.perplexity:
+                        velocity = wrapper.compute_perplexity(
+                            backstory_text=example['content'],
+                            novel_path=novel_path,
+                            max_chunks=args.ppl_chunks,
+                        )
+                    elif use_trajectories:
                         # FAST: Compare backstory_state against cached trajectory
                         # No novel re-read needed - instant comparison!
                         velocity = wrapper.compute_trajectory_velocity(
@@ -1236,7 +1271,13 @@ def run_inference(
                         )
                         
                         # Compute velocity (handle both trajectories and single states)
-                        if is_trajectory:
+                        if args.perplexity:
+                            velocity = wrapper.compute_perplexity(
+                                backstory_text=example['content'],
+                                novel_path=novel_path,
+                                max_chunks=args.ppl_chunks,
+                            )
+                        elif is_trajectory:
                             # FAST: Compare backstory_state against cached trajectory
                             velocity = wrapper.compute_trajectory_velocity(
                                 backstory_state,
