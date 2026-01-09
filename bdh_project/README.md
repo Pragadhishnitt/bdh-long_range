@@ -78,13 +78,25 @@ python main.py --small --mode cached --ensemble
 
 ### 7. **Ultimate Mode: K-Fold + Ensemble (Best Accuracy)**
 **Command**: `python main.py --mode cached --improvise --ensemble-fast`
-**Speed**: ~35 min (cached)
+**Speed**: ~35-40 min (cached)
 **Method**: Combines the robustness of K-fold with ensemble prediction:
 - **4-fold cross-validation** for robust threshold estimation
 - **Multi-checkpoint trajectories** (25%, 50%, 75%, 100%)
 - **Ensemble voting** (Velocity + Divergence) on each fold
 - **Median thresholds** computed for both hypotheses
-- **Expected Accuracy**: ~70-75% (cached)
+
+> [!WARNING]
+> **Do NOT use `--ensemble` (Full) with `--improvise` (K-Fold)!**
+> Full ensemble calculates perplexity, which takes ~7 hours per run.
+> K-Fold runs this 4 times → **~28 hours**.
+> Always use `--ensemble-fast` with K-Fold (~40 mins).
+
+### How Ensembling Works Now
+1. **Calibration**: For each fold, we find the optimal threshold for Velocity (A) and Divergence (B).
+2. **Validation**: For each test example:
+   - If Velocity < Threshold A → Vote Consistent (1)
+   - If Divergence < Threshold B → Vote Consistent (1)
+   - **Decision**: Both must agree (1+1=2). If they disagree, we trust Velocity (primary signal).
 
 ---
 
@@ -123,8 +135,15 @@ bdh_project/
 | **Cached + K-Fold** | `--improvise` | ~35 min | ~72-75% | Better accuracy |
 | **Fast Ensemble** | `--ensemble-fast` | ~30 min | ~67% | Quick ensemble |
 | **K-Fold + Ensemble** | `--improvise --ensemble-fast` | **~40 min** | **~70-75%** | **Best for cached** |
-| **Streaming** | `--mode streaming` | ~3.5 hrs | ~80% | High accuracy |
-| **Streaming + K-Fold** | `--mode streaming --improvise` | ~3.5 hrs | **~82-85%** | Best overall |
+| **Streaming** | `--mode streaming` | ~6.5 hrs | ~80% | High accuracy |
+| **Streaming + K-Fold** | `--mode streaming --improvise` | **~7 hrs** | **~82-85%** | **Maximum accuracy** |
+
+> [!NOTE]
+> **Why Streaming + K-fold takes 7 hours (not 3.5):**
+> - K-fold processes 240 examples (4 folds × 60) instead of 80
+> - Plus 60 test examples in inference
+> - Total: ~300 novel streams × ~780 chunks = ~234,000 forward passes
+> - See `time_complexity_explained.md` for full breakdown
 
 ---
 

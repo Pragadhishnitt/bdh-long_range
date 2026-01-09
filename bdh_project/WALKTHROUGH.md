@@ -244,8 +244,8 @@ flowchart LR
 ### 🔄 In Progress / Optional
 | Feature | Status | Notes |
 |---------|--------|-------|
-| **K-Fold + Ensemble** | ✅ Done | `--improvise --ensemble-fast` combines both |
-| **Full Ensemble (3 hyp)** | ⏳ Slow | `--ensemble` includes slow perplexity |
+| **K-Fold + Ensemble** | ✅ Done | `--improvise --ensemble-fast` (40 min) <br> ⚠ Full ensemble takes 28 hrs! |
+| **Full Ensemble (3 hyp)** | ⏳ Slow | `--ensemble` includes slow perplexity (~7 hrs) |
 | **Hyperparam Tuning** | ⏳ Pending | Damping (0.95-0.999), Chunk Size |
 
 ---

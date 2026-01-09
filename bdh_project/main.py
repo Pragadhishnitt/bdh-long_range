@@ -349,23 +349,11 @@ def run_kfold_calibration(
         for example in tqdm(fold_train, desc=f"Fold {fold_idx+1} Train"):
             try:
                 book_name = example['book_name']
+                novel_path = loader.get_book_path(book_name)
                 
-                if book_name not in novel_data:
-                    continue
-                
-                # Get novel data
-                novel_info = novel_data[book_name]
-                is_trajectory = isinstance(novel_info, list)
-                novel_state = novel_info[-1] if is_trajectory else novel_info
-                
-                # Prime with backstory
-                backstory_state, _ = wrapper.prime_with_backstory(
-                    example['content'], verbose=False
-                )
-                
+                # Mode-dependent processing
                 if mode == "streaming":
-                    # Full streaming for each example
-                    novel_path = loader.get_book_path(book_name)
+                    # STREAMING: Process full novel for each example (no cache needed)
                     metrics = wrapper.process_example(
                         backstory=example['content'],
                         novel_path=novel_path,
@@ -373,11 +361,31 @@ def run_kfold_calibration(
                         max_chunks=args.max_chunks if args.dry_run else None,
                     )
                     velocity = metrics.max_velocity
+                    
+                    # For ensemble, we need novel state for divergence
+                    if ensemble_mode:
+                        novel_state = wrapper.compute_novel_state(novel_path, verbose=False)
+                        backstory_state, _ = wrapper.prime_with_backstory(
+                            example['content'], verbose=False
+                        )
+                    
                     gc.collect()
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
                 else:
-                    # Cached mode
+                    # CACHED: Use pre-computed states/trajectories
+                    if book_name not in novel_data:
+                        continue
+                    
+                    novel_info = novel_data[book_name]
+                    is_trajectory = isinstance(novel_info, list)
+                    novel_state = novel_info[-1] if is_trajectory else novel_info
+                    
+                    # Prime with backstory
+                    backstory_state, _ = wrapper.prime_with_backstory(
+                        example['content'], verbose=False
+                    )
+                    
                     if is_trajectory:
                         velocity = wrapper.compute_trajectory_velocity(
                             backstory_state, novel_info, metric=metric
@@ -396,8 +404,8 @@ def run_kfold_calibration(
                 all_velocities.append(velocity)
                 all_labels.append(example['label_binary'])
                 
-                # Ensemble mode: also compute embedding divergence
-                if ensemble_mode and novel_state is not None:
+                # Ensemble mode: compute embedding divergence
+                if ensemble_mode:
                     divergence = wrapper.compute_embedding_divergence(
                         backstory_state, novel_state, metric=metric
                     )
@@ -424,29 +432,53 @@ def run_kfold_calibration(
         for example in tqdm(fold_val, desc=f"Fold {fold_idx+1} Val"):
             try:
                 book_name = example['book_name']
-                if book_name not in novel_data:
-                    continue
+                novel_path = loader.get_book_path(book_name)
                 
-                # Get novel data
-                novel_info = novel_data[book_name]
-                is_trajectory = isinstance(novel_info, list)
-                novel_state = novel_info[-1] if is_trajectory else novel_info
-                
-                backstory_state, _ = wrapper.prime_with_backstory(
-                    example['content'], verbose=False
-                )
-                
-                if is_trajectory:
-                    velocity = wrapper.compute_trajectory_velocity(
-                        backstory_state, novel_info, metric=metric
+                # Mode-dependent processing
+                if mode == "streaming":
+                    # STREAMING: Process full novel
+                    metrics = wrapper.process_example(
+                        backstory=example['content'],
+                        novel_path=novel_path,
+                        verbose=False,
+                        max_chunks=args.max_chunks if args.dry_run else None,
                     )
+                    velocity = metrics.max_velocity
+                    
+                    # For ensemble, compute novel state
+                    if ensemble_mode:
+                        novel_state = wrapper.compute_novel_state(novel_path, verbose=False)
+                        backstory_state, _ = wrapper.prime_with_backstory(
+                            example['content'], verbose=False
+                        )
+                    
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
                 else:
-                    velocity = wrapper.compute_velocity_from_states(
-                        backstory_state, novel_state, metric=metric
+                    # CACHED: Use pre-computed states/trajectories
+                    if book_name not in novel_data:
+                        continue
+                    
+                    novel_info = novel_data[book_name]
+                    is_trajectory = isinstance(novel_info, list)
+                    novel_state = novel_info[-1] if is_trajectory else novel_info
+                    
+                    backstory_state, _ = wrapper.prime_with_backstory(
+                        example['content'], verbose=False
                     )
+                    
+                    if is_trajectory:
+                        velocity = wrapper.compute_trajectory_velocity(
+                            backstory_state, novel_info, metric=metric
+                        )
+                    else:
+                        velocity = wrapper.compute_velocity_from_states(
+                            backstory_state, novel_state, metric=metric
+                        )
                 
                 # Ensemble prediction if enabled
-                if ensemble_mode and novel_state is not None:
+                if ensemble_mode:
                     divergence = wrapper.compute_embedding_divergence(
                         backstory_state, novel_state, metric=metric
                     )
@@ -948,26 +980,18 @@ def run_inference(
             
             # Choose processing mode
             if mode == "streaming":
-                # Streaming mode: Use cached states for inference
-                # (Streaming is only needed during calibration to find threshold)
-                if book_name not in novel_states:
-                    print(f"\n⚠ Novel state not cached for {book_name}, using default")
-                    prediction = 1
-                    velocity = 0.0
-                else:
-                    novel_state = novel_states[book_name]
-                    backstory_state, _ = wrapper.prime_with_backstory(
-                        example['content'],
-                        verbose=False,
-                    )
-                    velocity = wrapper.compute_velocity_from_states(
-                        backstory_state,
-                        novel_state,
-                        metric=metric,
-                    )
-                    prediction = calibration.predict(velocity)
+                # STREAMING: Always stream novels (even for inference)
+                novel_path = loader.get_book_path(book_name)
+                metrics = wrapper.process_example(
+                    backstory=example['content'],
+                    novel_path=novel_path,
+                    verbose=False,
+                    max_chunks=args.max_chunks if args.dry_run else None,
+                )
+                velocity = metrics.max_velocity
+                prediction = calibration.predict(velocity)
             else:
-                # Cached approach: compare final states or trajectories
+                # CACHED: Use pre-computed states or trajectories
                 if book_name not in novel_states:
                     print(f"\n⚠ Novel state not cached for {book_name}, using default")
                     prediction = 1  # Default to consistent
@@ -1210,6 +1234,11 @@ def main():
         print("  • K-fold cross-validation (4 folds, median threshold)")
         if mode == "cached":
             print("  • Multi-checkpoint trajectory caching (25%, 50%, 75%, 100%)")
+        elif mode == "streaming":
+            print("\n⚠ WARNING: Streaming + K-fold combination detected!")
+            print("  • This will take ~6.5 hours (240 novel streams for calibration + 60 for inference)")
+            print("  • Recommended: Use --mode cached --improvise (~40 min) for iteration")
+            print("  • Only use streaming + K-fold for final maximum-accuracy run")
     
     if args.ensemble:
         print("\n➡ ENSEMBLE MODE ENABLED:")
