@@ -671,7 +671,8 @@ def run_ensemble_calibration(
     ensemble_cal = EnsembleCalibration(
         velocity_calibration=velocity_cal,
         divergence_calibration=divergence_cal,
-        perplexity_calibration=perplexity_cal,
+        perplexity_calibration=perplexity_cal if not fast_mode else None,
+        fast_mode=fast_mode,
     )
     
     ensemble_correct = 0
@@ -680,7 +681,7 @@ def run_ensemble_calibration(
     for i in range(total):
         vel = velocity_cal.max_velocities[i]
         div = divergence_cal.max_velocities[i]
-        ppl = perplexity_cal.max_velocities[i]
+        ppl = 0.0 if fast_mode else perplexity_cal.max_velocities[i]
         label = velocity_cal.labels[i]
         
         pred = ensemble_cal.predict_ensemble(vel, div, ppl)
