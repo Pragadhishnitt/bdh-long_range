@@ -68,19 +68,23 @@ python main.py --small --mode cached --ensemble
 - **B. Embedding Divergence**: Measure drift from backstory embedding
 - **C. Perplexity**: Backstory-conditioned perplexity on novel
 - **Decision**: Majority vote (2/3 signals agree)
-- **Expected Accuracy**: ~72-75% (cached), ~82-85% (streaming)
 
-**Usage Examples:**
-```bash
-# Cached mode with ensemble (recommended for balance)
-python main.py --small --mode cached --ensemble
+### 6. Fast Ensemble (Velocity + Divergence Only)
+**Command**: `python main.py --mode cached --ensemble-fast`
+**Speed**: ~30 min (cached)
+**Method**: Skips slow perplexity computation:
+- Uses only **Velocity (A)** and **Embedding Divergence (B)**
+- Both must agree; velocity is tiebreaker
 
-# Streaming mode with ensemble (maximum accuracy)
-python main.py --small --mode streaming --ensemble
-
-# Combine improvise + ensemble (best of both)
-python main.py --small --mode cached --improvise --ensemble
-```
+### 7. **Ultimate Mode: K-Fold + Ensemble (Best Accuracy)**
+**Command**: `python main.py --mode cached --improvise --ensemble-fast`
+**Speed**: ~35 min (cached)
+**Method**: Combines the robustness of K-fold with ensemble prediction:
+- **4-fold cross-validation** for robust threshold estimation
+- **Multi-checkpoint trajectories** (25%, 50%, 75%, 100%)
+- **Ensemble voting** (Velocity + Divergence) on each fold
+- **Median thresholds** computed for both hypotheses
+- **Expected Accuracy**: ~70-75% (cached)
 
 ---
 
@@ -116,10 +120,11 @@ bdh_project/
 | Mode | Flags | Time | Accuracy | Use Case |
 |------|-------|------|----------|----------|
 | **Cached** | `--mode cached` | ~25 min | ~70% | Fast iteration |
-| **Cached + K-Fold** | `--mode cached --improvise` | ~35 min | **~75-78%** | Better accuracy |
+| **Cached + K-Fold** | `--improvise` | ~35 min | ~72-75% | Better accuracy |
+| **Fast Ensemble** | `--ensemble-fast` | ~30 min | ~67% | Quick ensemble |
+| **K-Fold + Ensemble** | `--improvise --ensemble-fast` | **~40 min** | **~70-75%** | **Best for cached** |
 | **Streaming** | `--mode streaming` | ~3.5 hrs | ~80% | High accuracy |
-| **Streaming + K-Fold** | `--mode streaming --improvise` | ~3.5 hrs | **~82-85%** | Best accuracy |
-| **Ensemble** | `--ensemble` | +10% | +2-5% | Combines 3 hypotheses |
+| **Streaming + K-Fold** | `--mode streaming --improvise` | ~3.5 hrs | **~82-85%** | Best overall |
 
 ---
 

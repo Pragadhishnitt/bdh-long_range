@@ -293,6 +293,8 @@ def run_kfold_calibration(
     mode: str = "cached",
     metric: str = "cosine",
     use_trajectories: bool = False,
+    ensemble_mode: bool = False,  # If True, use ensemble prediction
+    fast_ensemble: bool = False,  # If True, only use A+B (skip perplexity)
 ) -> Tuple[CalibrationResult, List[Dict]]:
     """Run K-fold cross-validation for robust threshold estimation.
     
@@ -306,6 +308,8 @@ def run_kfold_calibration(
         mode: Processing mode ("cached" or "streaming")
         metric: Distance metric
         use_trajectories: If True, novel_data contains trajectories (list of states)
+        ensemble_mode: If True, use ensemble voting instead of just velocity
+        fast_ensemble: If True (with ensemble_mode), skip perplexity (A+B only)
     
     Returns:
         final_calibration: Calibration with median threshold
@@ -339,6 +343,8 @@ def run_kfold_calibration(
         
         # Run calibration on fold_train
         fold_calibration = CalibrationResult()
+        # For ensemble mode, track additional hypotheses
+        divergence_cal_fold = CalibrationResult() if ensemble_mode else None
         
         for example in tqdm(fold_train, desc=f"Fold {fold_idx+1} Train"):
             try:
@@ -346,6 +352,16 @@ def run_kfold_calibration(
                 
                 if book_name not in novel_data:
                     continue
+                
+                # Get novel data
+                novel_info = novel_data[book_name]
+                is_trajectory = isinstance(novel_info, list)
+                novel_state = novel_info[-1] if is_trajectory else novel_info
+                
+                # Prime with backstory
+                backstory_state, _ = wrapper.prime_with_backstory(
+                    example['content'], verbose=False
+                )
                 
                 if mode == "streaming":
                     # Full streaming for each example
@@ -362,23 +378,16 @@ def run_kfold_calibration(
                         torch.cuda.empty_cache()
                 else:
                     # Cached mode
-                    backstory_state, _ = wrapper.prime_with_backstory(
-                        example['content'], verbose=False
-                    )
-                    
-                    if use_trajectories:
-                        # Use trajectory-based velocity
-                        trajectory = novel_data[book_name]
+                    if is_trajectory:
                         velocity = wrapper.compute_trajectory_velocity(
-                            backstory_state, trajectory, metric=metric
+                            backstory_state, novel_info, metric=metric
                         )
                     else:
-                        # Use single state
-                        novel_state = novel_data[book_name]
                         velocity = wrapper.compute_velocity_from_states(
                             backstory_state, novel_state, metric=metric
                         )
                 
+                # Always add velocity to main calibration
                 fold_calibration.add_example(
                     example_id=example['id'],
                     max_velocity=velocity,
@@ -387,11 +396,26 @@ def run_kfold_calibration(
                 all_velocities.append(velocity)
                 all_labels.append(example['label_binary'])
                 
+                # Ensemble mode: also compute embedding divergence
+                if ensemble_mode and novel_state is not None:
+                    divergence = wrapper.compute_embedding_divergence(
+                        backstory_state, novel_state, metric=metric
+                    )
+                    divergence_cal_fold.add_example(
+                        example_id=example['id'],
+                        max_velocity=divergence,
+                        label=example['label_binary']
+                    )
+                
             except Exception as e:
                 print(f"\n⚠ Error: {e}")
                 continue
         
         fold_calibration.compute_optimal_threshold()
+        
+        # Ensemble: compute divergence threshold
+        if ensemble_mode:
+            divergence_cal_fold.compute_optimal_threshold()
         
         # Validate on fold_val
         val_correct = 0
@@ -403,22 +427,40 @@ def run_kfold_calibration(
                 if book_name not in novel_data:
                     continue
                 
+                # Get novel data
+                novel_info = novel_data[book_name]
+                is_trajectory = isinstance(novel_info, list)
+                novel_state = novel_info[-1] if is_trajectory else novel_info
+                
                 backstory_state, _ = wrapper.prime_with_backstory(
                     example['content'], verbose=False
                 )
                 
-                if use_trajectories:
-                    trajectory = novel_data[book_name]
+                if is_trajectory:
                     velocity = wrapper.compute_trajectory_velocity(
-                        backstory_state, trajectory, metric=metric
+                        backstory_state, novel_info, metric=metric
                     )
                 else:
-                    novel_state = novel_data[book_name]
                     velocity = wrapper.compute_velocity_from_states(
                         backstory_state, novel_state, metric=metric
                     )
                 
-                prediction = fold_calibration.predict(velocity)
+                # Ensemble prediction if enabled
+                if ensemble_mode and novel_state is not None:
+                    divergence = wrapper.compute_embedding_divergence(
+                        backstory_state, novel_state, metric=metric
+                    )
+                    # Vote: both must agree, else use velocity as tiebreaker
+                    vel_pred = 1 if velocity < fold_calibration.optimal_threshold else 0
+                    div_pred = 1 if divergence < divergence_cal_fold.optimal_threshold else 0
+                    
+                    if vel_pred == div_pred:
+                        prediction = vel_pred
+                    else:
+                        prediction = vel_pred  # Use velocity as tiebreaker
+                else:
+                    prediction = fold_calibration.predict(velocity)
+                
                 if prediction == example['label_binary']:
                     val_correct += 1
                 val_total += 1
@@ -428,16 +470,24 @@ def run_kfold_calibration(
         
         val_accuracy = val_correct / val_total if val_total > 0 else 0.0
         
-        fold_results.append({
+        # Store divergence threshold if ensemble mode
+        fold_result_entry = {
             "fold": fold_idx + 1,
             "threshold": fold_calibration.optimal_threshold,
             "train_accuracy": fold_calibration.train_accuracy,
             "train_f1": fold_calibration.f1,
             "val_accuracy": val_accuracy,
-        })
+        }
+        if ensemble_mode:
+            fold_result_entry["divergence_threshold"] = divergence_cal_fold.optimal_threshold
+            fold_result_entry["divergence_train_acc"] = divergence_cal_fold.train_accuracy
+        
+        fold_results.append(fold_result_entry)
         
         print(f"\n  Fold {fold_idx+1} Results:")
-        print(f"    Threshold: {fold_calibration.optimal_threshold:.6f}")
+        print(f"    Velocity Threshold: {fold_calibration.optimal_threshold:.6f}")
+        if ensemble_mode:
+            print(f"    Divergence Threshold: {divergence_cal_fold.optimal_threshold:.6f}")
         print(f"    Train Acc: {fold_calibration.train_accuracy:.2%}, F1: {fold_calibration.f1:.4f}")
         print(f"    Val Acc: {val_accuracy:.2%}")
     
@@ -445,11 +495,20 @@ def run_kfold_calibration(
     thresholds = [r["threshold"] for r in fold_results]
     final_threshold = float(np.median(thresholds))
     
+    # Ensemble: aggregate divergence thresholds
+    final_divergence_threshold = 0.0
+    if ensemble_mode:
+        div_thresholds = [r.get("divergence_threshold", 0) for r in fold_results]
+        final_divergence_threshold = float(np.median(div_thresholds))
+    
     print(f"\n{'='*60}")
-    print("K-FOLD AGGREGATE RESULTS")
+    print("K-FOLD AGGREGATE RESULTS" + (" + ENSEMBLE" if ensemble_mode else ""))
     print(f"{'='*60}")
-    print(f"  Thresholds: {[f'{t:.6f}' for t in thresholds]}")
-    print(f"  Median Threshold: {final_threshold:.6f}")
+    print(f"  Velocity Thresholds: {[f'{t:.4f}' for t in thresholds]}")
+    print(f"  Median Velocity Threshold: {final_threshold:.6f}")
+    if ensemble_mode:
+        print(f"  Divergence Thresholds: {[f'{t:.4f}' for t in div_thresholds]}")
+        print(f"  Median Divergence Threshold: {final_divergence_threshold:.6f}")
     print(f"  Train Acc: {np.mean([r['train_accuracy'] for r in fold_results]):.2%} ± {np.std([r['train_accuracy'] for r in fold_results]):.2%}")
     print(f"  Val Acc: {np.mean([r['val_accuracy'] for r in fold_results]):.2%} ± {np.std([r['val_accuracy'] for r in fold_results]):.2%}")
     
@@ -464,11 +523,15 @@ def run_kfold_calibration(
     
     # Save K-fold results
     kfold_path = paths["checkpoints"] / "kfold_results.json"
+    save_data = {
+        "fold_results": fold_results,
+        "final_threshold": final_threshold,
+        "ensemble_mode": ensemble_mode,
+    }
+    if ensemble_mode:
+        save_data["final_divergence_threshold"] = final_divergence_threshold
     with open(kfold_path, 'w') as f:
-        json.dump({
-            "fold_results": fold_results,
-            "final_threshold": final_threshold,
-        }, f, indent=2)
+        json.dump(save_data, f, indent=2)
     print(f"\n✓ Saved K-fold results to {kfold_path}")
     
     return final_calibration, fold_results
@@ -1173,8 +1236,25 @@ def main():
     
     # Phase 1: Calibration
     if run_train:
-        if args.ensemble or args.ensemble_fast:
-            # Ensemble mode: calibrate hypotheses (2 or 3 depending on flag)
+        # Priority: Improvise + Ensemble > Ensemble only > Improvise only > Standard
+        if args.improvise and (args.ensemble or args.ensemble_fast):
+            # K-fold with Ensemble: Most robust option
+            fast_mode = args.ensemble_fast
+            calibration, fold_results = run_kfold_calibration(
+                wrapper=wrapper,
+                loader=loader,
+                novel_data=novel_data,
+                paths=paths,
+                args=args,
+                config_name=config_name,
+                mode=mode,
+                metric=metric,
+                use_trajectories=use_trajectories,
+                ensemble_mode=True,
+                fast_ensemble=fast_mode,
+            )
+        elif args.ensemble or args.ensemble_fast:
+            # Ensemble only (no K-fold)
             fast_mode = args.ensemble_fast
             ensemble_calibration = run_ensemble_calibration(
                 wrapper=wrapper,
@@ -1190,6 +1270,7 @@ def main():
             # Use velocity calibration as fallback for plots
             calibration = ensemble_calibration.velocity_calibration
         elif args.improvise:
+            # K-fold only (velocity-based)
             # K-fold cross-validation for robust threshold
             calibration, fold_results = run_kfold_calibration(
                 wrapper=wrapper,

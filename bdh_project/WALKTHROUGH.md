@@ -244,7 +244,8 @@ flowchart LR
 ### 🔄 In Progress / Optional
 | Feature | Status | Notes |
 |---------|--------|-------|
-| **Ensemble Hypothesis** | ⏳ Partial | `--ensemble` flag: Velocity done, B & C pending |
+| **K-Fold + Ensemble** | ✅ Done | `--improvise --ensemble-fast` combines both |
+| **Full Ensemble (3 hyp)** | ⏳ Slow | `--ensemble` includes slow perplexity |
 | **Hyperparam Tuning** | ⏳ Pending | Damping (0.95-0.999), Chunk Size |
 
 ---
