@@ -968,6 +968,7 @@ def run_calibration(
     mode: str = "cached",
     metric: str = "cosine",
     is_validation: bool = False,
+    use_trajectories: bool = False,
 ) -> CalibrationResult:
     """Run calibration on training set using cached novel states."""
     phase_name = "VALIDATION" if is_validation else "CALIBRATION"
@@ -1050,11 +1051,18 @@ def run_calibration(
                     )
                     
                     # Compute velocity against cached novel state
-                    velocity = wrapper.compute_velocity_from_states(
-                        backstory_state,
-                        novel_state,
-                        metric=metric,
-                    )
+                    if use_trajectories:
+                        velocity = wrapper.compute_trajectory_velocity(
+                            backstory_state,
+                            novel_state, # This is a list of states
+                            metric=metric,
+                        )
+                    else:
+                        velocity = wrapper.compute_velocity_from_states(
+                            backstory_state,
+                            novel_state,
+                            metric=metric,
+                        )
             
             # Record result
             calibration.add_example(
@@ -1539,6 +1547,7 @@ def main():
                 mode=mode,
                 metric=metric,
                 is_validation=False,
+                use_trajectories=use_trajectories,
             )
             
             # Phase 2: Validation (20 examples)
@@ -1553,6 +1562,7 @@ def main():
                     mode=mode,
                     metric=metric,
                     is_validation=True,
+                    use_trajectories=use_trajectories,
                 )
         
         # Generate plots

@@ -367,7 +367,7 @@ class BDHReasoningWrapper:
             # Cosine distance (1 - cosine_similarity)
             # More robust to magnitude differences
             rho_b = backstory_state.rho_matrix.flatten()
-            rho_n = novel_state.rho_matrix.flatten()
+            rho_n = novel_state.rho_matrix.flatten().to(rho_b.device)
             
             # Normalize
             rho_b_norm = rho_b / (rho_b.norm(p=2) + 1e-8)
