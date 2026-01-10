@@ -16,7 +16,7 @@ import torch.nn as nn
 from tqdm import tqdm
 
 from model.bdh_recurrent import RecurrentBDH, RecurrentState
-from utils.data_loader import ByteTokenizer
+from utils.data_loader import ByteTokenizer, normalize_text
 from config.model_config import BDHModelConfig, InferenceConfig, get_device, get_dtype
 
 
@@ -114,8 +114,8 @@ class ContextualAdapter:
             weight_decay=0.01
         )
         
-        # Tokenize and chunk backstory
-        tokens = self._tokenize(backstory_text)
+        # Tokenize and chunk backstory (normalized)
+        tokens = self._tokenize(normalize_text(backstory_text))
         chunks = self._chunk_tokens(tokens, chunk_size=256)
         
         if not chunks:
@@ -192,6 +192,7 @@ class ContextualAdapter:
         # Load novel
         with open(novel_path, 'r', encoding='utf-8', errors='replace') as f:
             novel_text = f.read()
+        novel_text = normalize_text(novel_text)  # Normalize for consistency
         
         tokens = self._tokenize(novel_text)
         chunks = self._chunk_tokens(tokens, chunk_size=self.inference_config.chunk_size)

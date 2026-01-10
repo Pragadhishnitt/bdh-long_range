@@ -4,6 +4,7 @@ from .data_loader import (
     ByteTokenizer,
     stream_book_chunks,
     get_dataset_stats,
+    normalize_text,
 )
 
 __all__ = [
@@ -11,4 +12,5 @@ __all__ = [
     "ByteTokenizer",
     "stream_book_chunks",
     "get_dataset_stats",
+    "normalize_text",
 ]

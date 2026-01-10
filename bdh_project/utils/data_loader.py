@@ -5,9 +5,31 @@ Handles CSV loading, book text loading, and byte-level tokenization.
 """
 
 import os
+import re
+import unicodedata
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import pandas as pd
+
+
+def normalize_text(text: str) -> str:
+    """
+    Conservative text normalization for BDH.
+    
+    Applied to both training and inference to ensure consistency.
+    Preserves case and semantic content while reducing byte-level noise.
+    """
+    if not text:
+        return text
+    # 1. Unicode NFC (canonical composition: é as single codepoint)
+    text = unicodedata.normalize('NFC', text)
+    # 2. Collapse multiple spaces/tabs to single space
+    text = re.sub(r'[ \t]+', ' ', text)
+    # 3. Collapse 3+ newlines to max 2 (preserve paragraph breaks)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    # 4. Strip leading/trailing whitespace
+    text = text.strip()
+    return text
 
 
 class DataLoader:
@@ -70,6 +92,7 @@ class DataLoader:
         with open(path, 'r', encoding='utf-8', errors='replace') as f:
             text = f.read()
         
+        text = normalize_text(text)  # Normalize novel text
         self.book_texts[book_name] = text
         return text
     
@@ -98,7 +121,7 @@ class DataLoader:
                 'book_name': row['book_name'],
                 'char': row['char'],
                 'caption': row.get('caption', ''),
-                'content': row['content'],
+                'content': normalize_text(row['content']),  # Normalize backstory
                 'label': row.get('label', ''),
                 'label_binary': row.get('label_binary', -1),
             })
@@ -116,7 +139,7 @@ class DataLoader:
                 'book_name': row['book_name'],
                 'char': row['char'],
                 'caption': row.get('caption', ''),
-                'content': row['content'],
+                'content': normalize_text(row['content']),  # Normalize backstory
             })
         return examples
 

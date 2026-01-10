@@ -21,7 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from model.bdh_recurrent import RecurrentBDH, RecurrentState, load_pretrained_bdh
 from metrics.analysis_metrics import ConsistencyMetrics, compute_velocity, compute_sparsity
-from utils.data_loader import ByteTokenizer
+from utils.data_loader import ByteTokenizer, normalize_text
 from config.model_config import BDHModelConfig, InferenceConfig, get_device, get_dtype
 
 
@@ -154,6 +154,7 @@ class BDHReasoningWrapper:
         # Load and tokenize novel
         with open(novel_path, 'r', encoding='utf-8', errors='replace') as f:
             novel_text = f.read()
+        novel_text = normalize_text(novel_text)  # Normalize for consistency
         
         tokens = self._tokenize(novel_text)
         chunks = self._chunk_tokens(tokens)
@@ -200,6 +201,7 @@ class BDHReasoningWrapper:
         # Load and tokenize novel
         with open(novel_path, 'r', encoding='utf-8', errors='replace') as f:
             novel_text = f.read()
+        novel_text = normalize_text(novel_text)  # Normalize for consistency
         
         tokens = self._tokenize(novel_text)
         chunks = self._chunk_tokens(tokens)
@@ -263,6 +265,7 @@ class BDHReasoningWrapper:
         # Load and tokenize novel
         with open(novel_path, 'r', encoding='utf-8', errors='replace') as f:
             novel_text = f.read()
+        novel_text = normalize_text(novel_text)  # Normalize for consistency
         
         tokens = self._tokenize(novel_text)
         chunks = self._chunk_tokens(tokens)
@@ -337,6 +340,7 @@ class BDHReasoningWrapper:
         # 2. Read novel starting from backstory state
         with open(novel_path, 'r', encoding='utf-8', errors='replace') as f:
             novel_text = f.read()
+        novel_text = normalize_text(novel_text)  # Normalize for consistency
         
         tokens = self._tokenize(novel_text)
         chunks = self._chunk_tokens(tokens)
@@ -552,6 +556,7 @@ class BDHReasoningWrapper:
         # Load novel
         with open(novel_path, 'r', encoding='utf-8', errors='replace') as f:
             novel_text = f.read()
+        novel_text = normalize_text(novel_text)  # Normalize for consistency
         
         tokens = self._tokenize(novel_text)
         chunks = self._chunk_tokens(tokens)
@@ -651,6 +656,7 @@ class BDHReasoningWrapper:
         # Now process novel starting from backstory state
         with open(novel_path, 'r', encoding='utf-8', errors='replace') as f:
             novel_text = f.read()
+        novel_text = normalize_text(novel_text)  # Normalize for consistency
         
         tokens = self._tokenize(novel_text)
         chunks = self._chunk_tokens(tokens)
@@ -735,6 +741,7 @@ class BDHReasoningWrapper:
         # Load and tokenize novel
         with open(novel_path, 'r', encoding='utf-8', errors='replace') as f:
             novel_text = f.read()
+        novel_text = normalize_text(novel_text)  # Normalize for consistency
         
         tokens = self._tokenize(novel_text)
         chunks = self._chunk_tokens(tokens)
