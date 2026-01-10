@@ -1128,6 +1128,171 @@ def run_adapt_calibration(
     return calibration
 
 
+def run_adapt_kfold_calibration(
+    adapter: ContextualAdapter,
+    loader: DataLoader,
+    paths: Dict[str, Path],
+    args: argparse.Namespace,
+    config_name: str,
+    n_folds: int = 4,
+) -> Tuple[CalibrationResult, List[Dict]]:
+    """
+    Run K-fold cross-validation with TTT.
+    
+    Optimization: Compute TTT scores ONCE for all examples,
+    then perform K-fold CV on those pre-computed scores.
+    
+    Args:
+        adapter: ContextualAdapter instance
+        loader: Data loader
+        paths: Output paths
+        args: Command line arguments
+        config_name: Model config name
+        n_folds: Number of folds
+    
+    Returns:
+        final_calibration: Calibration with median threshold
+        fold_results: List of per-fold results
+    """
+    print("\n" + "="*60)
+    print(f"TTT K-FOLD CROSS-VALIDATION ({n_folds} folds)")
+    print("="*60)
+    print(f"  Learning rate: {args.adapt_lr}")
+    print(f"  Adaptation steps: {args.adapt_steps}")
+    print(f"  Max PPL chunks: {args.ppl_chunks}")
+    
+    train_examples = loader.get_train_examples()
+    
+    if args.limit:
+        train_examples = train_examples[:args.limit]
+    
+    # PHASE 1: Compute TTT scores for ALL examples (expensive, done once)
+    print(f"\n{'─'*40}")
+    print("PHASE 1: Computing TTT scores for all examples...")
+    print(f"{'─'*40}")
+    
+    example_scores = {}  # {example_id: (score, label)}
+    
+    pbar = tqdm(train_examples, desc="TTT Scoring")
+    
+    for example in pbar:
+        try:
+            book_name = example['book_name']
+            novel_path = loader.get_book_path(book_name)
+            
+            score = adapter.score_consistency(
+                backstory_text=example['content'],
+                novel_path=novel_path,
+                max_chunks=args.ppl_chunks,
+                verbose=False,
+            )
+            
+            example_scores[example['id']] = (score, example['label_binary'])
+            
+            pbar.set_postfix({
+                "ppl": f"{score:.2f}",
+                "label": "C" if example['label_binary'] == 1 else "X",
+            })
+            
+        except Exception as e:
+            print(f"\n⚠ Error processing example {example['id']}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
+    
+    # PHASE 2: K-fold CV on pre-computed scores (fast)
+    print(f"\n{'─'*40}")
+    print(f"PHASE 2: K-fold cross-validation on scores...")
+    print(f"{'─'*40}")
+    
+    from sklearn.model_selection import StratifiedKFold
+    
+    # Prepare data for K-fold
+    example_ids = list(example_scores.keys())
+    scores = np.array([example_scores[eid][0] for eid in example_ids])
+    labels = np.array([example_scores[eid][1] for eid in example_ids])
+    
+    skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=42)
+    
+    fold_results = []
+    fold_thresholds = []
+    
+    for fold_idx, (train_idx, val_idx) in enumerate(skf.split(scores, labels)):
+        print(f"\n  Fold {fold_idx + 1}/{n_folds}:")
+        
+        # Train calibration
+        train_cal = CalibrationResult()
+        for idx in train_idx:
+            train_cal.add_example(
+                example_id=example_ids[idx],
+                max_velocity=scores[idx],
+                label=labels[idx],
+            )
+        
+        threshold = train_cal.compute_optimal_threshold()
+        fold_thresholds.append(threshold)
+        
+        # Validation
+        val_cal = CalibrationResult()
+        for idx in val_idx:
+            val_cal.add_example(
+                example_id=example_ids[idx],
+                max_velocity=scores[idx],
+                label=labels[idx],
+            )
+        
+        val_cal.optimal_threshold = threshold
+        val_cal.compute_optimal_threshold()  # Recompute stats with this threshold
+        
+        # Compute validation accuracy
+        val_predictions = (scores[val_idx] < threshold).astype(int)
+        val_accuracy = (val_predictions == labels[val_idx]).mean()
+        
+        print(f"    Train Threshold: {threshold:.6f}")
+        print(f"    Train Acc: {train_cal.train_accuracy:.2%}, F1: {train_cal.f1:.4f}")
+        print(f"    Consistent μ={train_cal.consistent_mean:.4f}, σ={train_cal.consistent_std:.4f}, p95={train_cal.consistent_p95:.4f}")
+        print(f"    Contradict μ={train_cal.contradict_mean:.4f}, σ={train_cal.contradict_std:.4f}, p95={train_cal.contradict_p95:.4f}")
+        print(f"    Val Acc: {val_accuracy:.2%}")
+        
+        fold_results.append({
+            "fold": fold_idx + 1,
+            "threshold": threshold,
+            "train_accuracy": train_cal.train_accuracy,
+            "train_f1": train_cal.f1,
+            "val_accuracy": val_accuracy,
+        })
+    
+    # Aggregate results
+    median_threshold = float(np.median(fold_thresholds))
+    mean_val_acc = np.mean([r["val_accuracy"] for r in fold_results])
+    std_val_acc = np.std([r["val_accuracy"] for r in fold_results])
+    
+    print(f"\n{'─'*40}")
+    print(f"K-FOLD SUMMARY:")
+    print(f"  Median Threshold: {median_threshold:.6f}")
+    print(f"  Mean Val Accuracy: {mean_val_acc:.2%} ± {std_val_acc:.2%}")
+    print(f"  Fold Thresholds: {[f'{t:.4f}' for t in fold_thresholds]}")
+    print(f"{'─'*40}")
+    
+    # Create final calibration with median threshold
+    final_calibration = CalibrationResult()
+    for eid in example_ids:
+        final_calibration.add_example(
+            example_id=eid,
+            max_velocity=example_scores[eid][0],
+            label=example_scores[eid][1],
+        )
+    
+    final_calibration.optimal_threshold = median_threshold
+    final_calibration.compute_optimal_threshold()
+    
+    # Save checkpoint
+    checkpoint_path = paths["checkpoints"] / "ttt_kfold_calibration.json"
+    save_checkpoint(final_calibration, checkpoint_path, config_name)
+    
+    return final_calibration, fold_results
+
+
 def run_calibration(
     wrapper: BDHReasoningWrapper,
     loader: DataLoader,
@@ -1702,8 +1867,29 @@ def main():
     
     # Phase 1: Calibration
     if run_train:
-        # Priority: TTT > Improvise + Ensemble > Ensemble only > Improvise only > Standard
-        if args.adapt:
+        # Priority: TTT+Improvise > TTT > Improvise + Ensemble > Ensemble only > Improvise only > Standard
+        if args.adapt and args.improvise:
+            # TTT + K-fold: Compute scores once, cross-validate threshold
+            print("\n➡ TTT + K-FOLD MODE ENABLED:")
+            print("  • Computing TTT scores for all examples (once)")
+            print("  • Then performing K-fold CV on scores")
+            print(f"  • LR={args.adapt_lr}, Steps={args.adapt_steps}")
+            
+            adapter = ContextualAdapter(
+                model_config=model_config,
+                inference_config=inference_config,
+                device=device,
+                adapt_lr=args.adapt_lr,
+                adapt_steps=args.adapt_steps,
+            )
+            calibration, fold_results = run_adapt_kfold_calibration(
+                adapter=adapter,
+                loader=loader,
+                paths=paths,
+                args=args,
+                config_name=config_name,
+            )
+        elif args.adapt:
             # Test-Time Training mode: fine-tune on backstory, evaluate on novel
             print("\n➡ TTT MODE ENABLED:")
             print("  • Fine-tuning model on each backstory via SGD")
