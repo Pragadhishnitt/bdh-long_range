@@ -750,8 +750,8 @@ def run_kfold_calibration(
         if ensemble_mode:
             print(f"    Divergence Threshold: {divergence_cal_fold.optimal_threshold:.6f}")
         print(f"    Train Acc: {fold_calibration.train_accuracy:.2%}, F1: {fold_calibration.f1:.4f}")
-        print(f"    Consistent μ={fold_calibration.consistent_mean:.4f}, σ={fold_calibration.consistent_std:.4f}")
-        print(f"    Contradict μ={fold_calibration.contradict_mean:.4f}, σ={fold_calibration.contradict_std:.4f}")
+        print(f"    Consistent μ={fold_calibration.consistent_mean:.4f}, σ={fold_calibration.consistent_std:.4f}, p95={fold_calibration.consistent_p95:.4f}")
+        print(f"    Contradict μ={fold_calibration.contradict_mean:.4f}, σ={fold_calibration.contradict_std:.4f}, p95={fold_calibration.contradict_p95:.4f}")
         print(f"    Val Acc: {val_accuracy:.2%}")
     
     # Aggregate results
@@ -958,8 +958,8 @@ def run_ensemble_calibration(
     print(f"  Threshold: {velocity_cal.optimal_threshold:.6f}")
     print(f"  Accuracy: {velocity_cal.train_accuracy:.2%}")
     print(f"  F1: {velocity_cal.f1:.4f}")
-    print(f"  Consistent μ={velocity_cal.consistent_mean:.4f}, σ={velocity_cal.consistent_std:.4f}")
-    print(f"  Contradict μ={velocity_cal.contradict_mean:.4f}, σ={velocity_cal.contradict_std:.4f}")
+    print(f"  Consistent μ={velocity_cal.consistent_mean:.4f}, σ={velocity_cal.consistent_std:.4f}, p95={velocity_cal.consistent_p95:.4f}")
+    print(f"  Contradict μ={velocity_cal.contradict_mean:.4f}, σ={velocity_cal.contradict_std:.4f}, p95={velocity_cal.contradict_p95:.4f}")
     
     print("\n" + "-"*40)
     print("HYPOTHESIS B: Embedding Divergence")
@@ -967,8 +967,8 @@ def run_ensemble_calibration(
     print(f"  Threshold: {divergence_cal.optimal_threshold:.6f}")
     print(f"  Accuracy: {divergence_cal.train_accuracy:.2%}")
     print(f"  F1: {divergence_cal.f1:.4f}")
-    print(f"  Consistent μ={divergence_cal.consistent_mean:.4f}, σ={divergence_cal.consistent_std:.4f}")
-    print(f"  Contradict μ={divergence_cal.contradict_mean:.4f}, σ={divergence_cal.contradict_std:.4f}")
+    print(f"  Consistent μ={divergence_cal.consistent_mean:.4f}, σ={divergence_cal.consistent_std:.4f}, p95={divergence_cal.consistent_p95:.4f}")
+    print(f"  Contradict μ={divergence_cal.contradict_mean:.4f}, σ={divergence_cal.contradict_std:.4f}, p95={divergence_cal.contradict_p95:.4f}")
     
     print("\n" + "-"*40)
     print("HYPOTHESIS C: Perplexity")
@@ -976,8 +976,8 @@ def run_ensemble_calibration(
     print(f"  Threshold: {perplexity_cal.optimal_threshold:.6f}")
     print(f"  Accuracy: {perplexity_cal.train_accuracy:.2%}")
     print(f"  F1: {perplexity_cal.f1:.4f}")
-    print(f"  Consistent μ={perplexity_cal.consistent_mean:.4f}, σ={perplexity_cal.consistent_std:.4f}")
-    print(f"  Contradict μ={perplexity_cal.contradict_mean:.4f}, σ={perplexity_cal.contradict_std:.4f}")
+    print(f"  Consistent μ={perplexity_cal.consistent_mean:.4f}, σ={perplexity_cal.consistent_std:.4f}, p95={perplexity_cal.consistent_p95:.4f}")
+    print(f"  Contradict μ={perplexity_cal.contradict_mean:.4f}, σ={perplexity_cal.contradict_std:.4f}, p95={perplexity_cal.contradict_p95:.4f}")
     
     # Compute ensemble accuracy (majority vote)
     ensemble_cal = EnsembleCalibration(
@@ -1100,8 +1100,8 @@ def run_adapt_calibration(
     print(f"  Optimal threshold: {threshold:.6f}")
     print(f"  Accuracy: {calibration.train_accuracy:.2%}")
     print(f"  F1 Score: {calibration.f1:.4f}")
-    print(f"  Consistent μ={calibration.consistent_mean:.4f}, σ={calibration.consistent_std:.4f}")
-    print(f"  Contradict μ={calibration.contradict_mean:.4f}, σ={calibration.contradict_std:.4f}")
+    print(f"  Consistent μ={calibration.consistent_mean:.4f}, σ={calibration.consistent_std:.4f}, p95={calibration.consistent_p95:.4f}")
+    print(f"  Contradict μ={calibration.contradict_mean:.4f}, σ={calibration.contradict_std:.4f}, p95={calibration.contradict_p95:.4f}")
     print(f"\n  Confusion Matrix:")
     print(calibration.print_confusion_matrix())
     print(f"{'─'*40}")
@@ -1276,8 +1276,8 @@ def run_calibration(
     print(f"  Optimal threshold: {threshold:.6f}")
     print(f"  Accuracy: {calibration.train_accuracy:.2%}")
     print(f"  F1 Score: {calibration.f1:.4f}")
-    print(f"  Consistent μ={calibration.consistent_mean:.4f}, σ={calibration.consistent_std:.4f}")
-    print(f"  Contradict μ={calibration.contradict_mean:.4f}, σ={calibration.contradict_std:.4f}")
+    print(f"  Consistent μ={calibration.consistent_mean:.4f}, σ={calibration.consistent_std:.4f}, p95={calibration.consistent_p95:.4f}")
+    print(f"  Contradict μ={calibration.contradict_mean:.4f}, σ={calibration.contradict_std:.4f}, p95={calibration.contradict_p95:.4f}")
     print(f"\n  Confusion Matrix:")
     print(calibration.print_confusion_matrix())
     print(f"{'─'*40}")

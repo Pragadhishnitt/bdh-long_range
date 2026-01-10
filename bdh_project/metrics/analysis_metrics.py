@@ -106,8 +106,10 @@ class CalibrationResult:
     # Distribution stats
     consistent_mean: float = 0.0
     consistent_std: float = 0.0
+    consistent_p95: float = 0.0  # 95th percentile
     contradict_mean: float = 0.0
     contradict_std: float = 0.0
+    contradict_p95: float = 0.0  # 95th percentile
     
     # Enhanced metrics (F1 and confusion matrix)
     f1: float = 0.0
@@ -134,10 +136,12 @@ class CalibrationResult:
         if consistent_mask.sum() > 0:
             self.consistent_mean = float(velocities[consistent_mask].mean())
             self.consistent_std = float(velocities[consistent_mask].std())
+            self.consistent_p95 = float(np.percentile(velocities[consistent_mask], 95))
         
         if contradict_mask.sum() > 0:
             self.contradict_mean = float(velocities[contradict_mask].mean())
             self.contradict_std = float(velocities[contradict_mask].std())
+            self.contradict_p95 = float(np.percentile(velocities[contradict_mask], 95))
         
         # Grid search for optimal threshold
         # Hypothesis: consistent examples have LOWER max velocity
@@ -189,8 +193,10 @@ class CalibrationResult:
             "f1_score": self.f1,
             "consistent_mean": self.consistent_mean,
             "consistent_std": self.consistent_std,
+            "consistent_p95": self.consistent_p95,
             "contradict_mean": self.contradict_mean,
             "contradict_std": self.contradict_std,
+            "contradict_p95": self.contradict_p95,
             "n_examples": len(self.example_ids),
         }
         if self.confusion_mat is not None:
