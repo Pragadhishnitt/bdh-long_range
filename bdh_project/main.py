@@ -1483,6 +1483,7 @@ def run_inference(
 def generate_plots(
     calibration: Union[CalibrationResult, EnsembleCalibration],
     paths: Dict[str, Path],
+    metric_name: str = "Max Velocity",
 ):
     """Generate visualization plots."""
     try:
@@ -1493,8 +1494,10 @@ def generate_plots(
         return
     
     # Handle ensemble object
+    perplexity_cal = None
     if isinstance(calibration, EnsembleCalibration):
         # For plots, we primarily visualize the velocity component
+        perplexity_cal = calibration.perplexity_calibration
         calibration = calibration.velocity_calibration
     
     print("\nGenerating plots...")
@@ -1512,9 +1515,9 @@ def generate_plots(
     ax.hist(contradict, bins=20, alpha=0.6, label='Contradict', color='red')
     ax.axvline(calibration.optimal_threshold, color='black', linestyle='--', 
                label=f'Threshold: {calibration.optimal_threshold:.4f}')
-    ax.set_xlabel('Max Velocity')
+    ax.set_xlabel(metric_name)
     ax.set_ylabel('Count')
-    ax.set_title('Velocity Distribution by Label')
+    ax.set_title(f'{metric_name} Distribution by Label')
     ax.legend()
     
     plt.tight_layout()
@@ -1530,14 +1533,39 @@ def generate_plots(
     ax.scatter(range(len(velocities)), velocities, c=colors, alpha=0.7)
     ax.axhline(calibration.optimal_threshold, color='black', linestyle='--')
     ax.set_xlabel('Example Index')
-    ax.set_ylabel('Max Velocity')
-    ax.set_title('Training Examples: Max Velocity')
+    ax.set_ylabel(metric_name)
+    ax.set_title(f'Training Examples: {metric_name}')
     
     plt.tight_layout()
     plt.savefig(paths["plots"] / "velocity_scatter.png", dpi=150)
     plt.close()
     
     print(f"✓ Saved: velocity_scatter.png")
+    
+    # 3. Perplexity distributions (if available)
+    if perplexity_cal is not None and perplexity_cal.max_velocities:
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        ppl_scores = np.array(perplexity_cal.max_velocities)
+        ppl_labels = np.array(perplexity_cal.labels)
+        
+        ppl_consistent = ppl_scores[ppl_labels == 1]
+        ppl_contradict = ppl_scores[ppl_labels == 0]
+        
+        ax.hist(ppl_consistent, bins=20, alpha=0.6, label='Consistent', color='green')
+        ax.hist(ppl_contradict, bins=20, alpha=0.6, label='Contradict', color='red')
+        ax.axvline(perplexity_cal.optimal_threshold, color='black', linestyle='--',
+                   label=f'Threshold: {perplexity_cal.optimal_threshold:.4f}')
+        ax.set_xlabel('Perplexity Score')
+        ax.set_ylabel('Count')
+        ax.set_title('Perplexity Distribution by Label')
+        ax.legend()
+        
+        plt.tight_layout()
+        plt.savefig(paths["plots"] / "perplexity_distribution.png", dpi=150)
+        plt.close()
+        
+        print(f"✓ Saved: perplexity_distribution.png")
 
 
 def main():
@@ -1773,7 +1801,8 @@ def main():
                 )
         
         # Generate plots
-        generate_plots(calibration, paths)
+        metric_name = "Perplexity" if (args.adapt or args.perplexity) else "Max Velocity"
+        generate_plots(calibration, paths, metric_name=metric_name)
     
     # Phase 3: Test Inference (60 examples)
     if run_infer:
