@@ -13,6 +13,7 @@ from contextlib import nullcontext
 
 import torch
 import torch.nn as nn
+import numpy as np
 from tqdm import tqdm
 
 from model.bdh_recurrent import RecurrentBDH, RecurrentState
@@ -177,6 +178,7 @@ class ContextualAdapter:
         model: RecurrentBDH,
         novel_path: Path,
         max_chunks: int = 20,
+        use_peak: bool = True,
     ) -> float:
         """
         Compute perplexity of novel using adapted model.
@@ -185,9 +187,10 @@ class ContextualAdapter:
             model: Adapted model
             novel_path: Path to novel file
             max_chunks: Maximum chunks to process
+            use_peak: If True, return peak (max) perplexity; if False, return mean
             
         Returns:
-            perplexity: exp(mean_cross_entropy_loss)
+            perplexity: Peak or mean perplexity
         """
         # Load novel
         with open(novel_path, 'r', encoding='utf-8', errors='replace') as f:
@@ -200,8 +203,7 @@ class ContextualAdapter:
         if max_chunks:
             chunks = chunks[:max_chunks]
         
-        total_loss = 0.0
-        total_tokens = 0
+        chunk_perplexities = []
         state = model.reset_state()
         
         with self.amp_context:
@@ -219,22 +221,27 @@ class ContextualAdapter:
                     return_rho_update=False,
                 )
                 
-                loss_fn = nn.CrossEntropyLoss(reduction='sum')
-                loss = loss_fn(
+                loss_fn = nn.CrossEntropyLoss(reduction='mean')
+                chunk_loss = loss_fn(
                     logits.view(-1, logits.size(-1)),
                     target_ids.view(-1)
                 )
                 
-                total_loss += loss.item()
-                total_tokens += target_ids.numel()
+                # Convert to perplexity for this chunk
+                chunk_ppl = math.exp(min(chunk_loss.item(), 20))
+                chunk_perplexities.append(chunk_ppl)
                 
                 state.detach()
         
-        if total_tokens == 0:
+        if not chunk_perplexities:
             return 1.0
         
-        mean_loss = total_loss / total_tokens
-        perplexity = math.exp(min(mean_loss, 20))  # Cap to prevent overflow
+        if use_peak:
+            # Return peak (maximum) perplexity across chunks
+            perplexity = max(chunk_perplexities)
+        else:
+            # Return mean perplexity (original behavior)
+            perplexity = float(np.mean(chunk_perplexities))
         
         return float(perplexity)
     
@@ -244,6 +251,7 @@ class ContextualAdapter:
         novel_path: Path,
         max_chunks: int = 20,
         verbose: bool = False,
+        use_peak: bool = True,
     ) -> float:
         """
         Score consistency by adapting to backstory and computing novel perplexity.
@@ -256,6 +264,7 @@ class ContextualAdapter:
             novel_path: Path to novel file
             max_chunks: Max chunks for perplexity computation
             verbose: Show progress
+            use_peak: If True, use peak perplexity; if False, use mean
             
         Returns:
             perplexity: Consistency score (lower = more consistent)
@@ -268,6 +277,7 @@ class ContextualAdapter:
             adapted_model,
             novel_path,
             max_chunks=max_chunks,
+            use_peak=use_peak,
         )
         
         # Cleanup adapted model

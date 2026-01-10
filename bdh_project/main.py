@@ -209,6 +209,15 @@ Examples:
         "--adapt-steps", type=int, default=10, dest="adapt_steps",
         help="Number of SGD steps for TTT adaptation (default: 10)"
     )
+    parser.add_argument(
+        "--peak-ppl", action="store_true", dest="peak_ppl",
+        help="Use peak (max) perplexity instead of mean for TTT (default: True, use --no-peak-ppl to disable)"
+    )
+    parser.add_argument(
+        "--no-peak-ppl", action="store_false", dest="peak_ppl",
+        help="Use mean perplexity instead of peak for TTT"
+    )
+    parser.set_defaults(peak_ppl=True)  # Default to peak perplexity
     
     return parser.parse_args()
 
@@ -1052,6 +1061,7 @@ def run_adapt_calibration(
     print(f"  Learning rate: {args.adapt_lr}")
     print(f"  Adaptation steps: {args.adapt_steps}")
     print(f"  Max PPL chunks: {args.ppl_chunks}")
+    print(f"  Metric: {'Peak (Max)' if args.peak_ppl else 'Mean'} Perplexity")
     
     train_examples = loader.get_train_examples()
     
@@ -1073,6 +1083,7 @@ def run_adapt_calibration(
                 novel_path=novel_path,
                 max_chunks=args.ppl_chunks,
                 verbose=False,
+                use_peak=args.peak_ppl,
             )
             
             calibration.add_example(
@@ -1160,6 +1171,7 @@ def run_adapt_kfold_calibration(
     print(f"  Learning rate: {args.adapt_lr}")
     print(f"  Adaptation steps: {args.adapt_steps}")
     print(f"  Max PPL chunks: {args.ppl_chunks}")
+    print(f"  Metric: {'Peak (Max)' if args.peak_ppl else 'Mean'} Perplexity")
     
     train_examples = loader.get_train_examples()
     
@@ -1185,6 +1197,7 @@ def run_adapt_kfold_calibration(
                 novel_path=novel_path,
                 max_chunks=args.ppl_chunks,
                 verbose=False,
+                use_peak=args.peak_ppl,
             )
             
             example_scores[example['id']] = (score, example['label_binary'])
