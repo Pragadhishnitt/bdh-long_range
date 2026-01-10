@@ -41,7 +41,7 @@ from config import (
 )
 from metrics import ConsistencyMetrics, CalibrationResult
 from utils import DataLoader, get_dataset_stats
-from inference import BDHReasoningWrapper
+from inference import BDHReasoningWrapper, ContextualAdapter
 
 
 @dataclass
@@ -194,6 +194,20 @@ Examples:
     parser.add_argument(
         "--ppl-chunks", type=int, default=20, dest="ppl_chunks",
         help="Max chunks for perplexity computation (default: 20 = first ~40k tokens)"
+    )
+    
+    # Test-Time Training (TTT) / Contextual Adaptation
+    parser.add_argument(
+        "--adapt", action="store_true",
+        help="Use Test-Time Training (TTT): fine-tune model on backstory before evaluating novel"
+    )
+    parser.add_argument(
+        "--adapt-lr", type=float, default=1e-4, dest="adapt_lr",
+        help="Learning rate for TTT adaptation (default: 1e-4)"
+    )
+    parser.add_argument(
+        "--adapt-steps", type=int, default=10, dest="adapt_steps",
+        help="Number of SGD steps for TTT adaptation (default: 10)"
     )
     
     return parser.parse_args()
@@ -1007,6 +1021,113 @@ def run_ensemble_calibration(
     return ensemble_cal
 
 
+def run_adapt_calibration(
+    adapter: ContextualAdapter,
+    loader: DataLoader,
+    paths: Dict[str, Path],
+    args: argparse.Namespace,
+    config_name: str,
+) -> CalibrationResult:
+    """
+    Run calibration using Test-Time Training (TTT).
+    
+    For each example:
+    1. Adapt model to backstory via SGD
+    2. Compute perplexity of novel using adapted model
+    3. Lower perplexity = consistent (model is "less surprised")
+    
+    Args:
+        adapter: ContextualAdapter instance
+        loader: Data loader
+        paths: Output paths
+        args: Command line arguments
+        config_name: Model config name
+    
+    Returns:
+        CalibrationResult with optimal threshold
+    """
+    print("\n" + "="*60)
+    print("PHASE 1: TTT CALIBRATION (Test-Time Training)")
+    print("="*60)
+    print(f"  Learning rate: {args.adapt_lr}")
+    print(f"  Adaptation steps: {args.adapt_steps}")
+    print(f"  Max PPL chunks: {args.ppl_chunks}")
+    
+    train_examples = loader.get_train_examples()
+    
+    if args.limit:
+        train_examples = train_examples[:args.limit]
+    
+    calibration = CalibrationResult()
+    
+    pbar = tqdm(train_examples, desc="TTT Calibrating")
+    
+    for example in pbar:
+        try:
+            book_name = example['book_name']
+            novel_path = loader.get_book_path(book_name)
+            
+            # Score using TTT: adapt to backstory, then compute perplexity on novel
+            score = adapter.score_consistency(
+                backstory_text=example['content'],
+                novel_path=novel_path,
+                max_chunks=args.ppl_chunks,
+                verbose=False,
+            )
+            
+            calibration.add_example(
+                example_id=example['id'],
+                max_velocity=score,  # Using velocity field for perplexity score
+                label=example['label_binary'],
+            )
+            
+            pbar.set_postfix({
+                "ppl": f"{score:.2f}",
+                "label": "C" if example['label_binary'] == 1 else "X",
+            })
+            
+        except Exception as e:
+            print(f"\n⚠ Error processing example {example['id']}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
+    
+    # Compute optimal threshold
+    threshold = calibration.compute_optimal_threshold()
+    
+    print(f"\n{'─'*40}")
+    print(f"TTT CALIBRATION RESULTS:")
+    print(f"  Optimal threshold: {threshold:.6f}")
+    print(f"  Accuracy: {calibration.train_accuracy:.2%}")
+    print(f"  F1 Score: {calibration.f1:.4f}")
+    print(f"  Consistent μ={calibration.consistent_mean:.4f}, σ={calibration.consistent_std:.4f}")
+    print(f"  Contradict μ={calibration.contradict_mean:.4f}, σ={calibration.contradict_std:.4f}")
+    print(f"\n  Confusion Matrix:")
+    print(calibration.print_confusion_matrix())
+    print(f"{'─'*40}")
+    
+    # Separation analysis
+    separation = abs(calibration.consistent_mean - calibration.contradict_mean)
+    avg_std = (calibration.consistent_std + calibration.contradict_std) / 2
+    z_score = separation / avg_std if avg_std > 0 else 0
+    
+    print(f"\n  SEPARATION ANALYSIS:")
+    print(f"    Absolute separation: {separation:.4f}")
+    print(f"    Z-score: {z_score:.2f} (higher = better)")
+    if z_score < 1.0:
+        print(f"    ⚠ Low separation - classes overlap significantly")
+    elif z_score < 2.0:
+        print(f"    ~ Moderate separation - some overlap")
+    else:
+        print(f"    ✓ Good separation - classes are distinguishable")
+    
+    # Save checkpoint
+    checkpoint_path = paths["checkpoints"] / "ttt_calibration.json"
+    save_checkpoint(calibration, checkpoint_path, config_name)
+    
+    return calibration
+
+
 def run_calibration(
     wrapper: BDHReasoningWrapper,
     loader: DataLoader,
@@ -1553,8 +1674,29 @@ def main():
     
     # Phase 1: Calibration
     if run_train:
-        # Priority: Improvise + Ensemble > Ensemble only > Improvise only > Standard
-        if args.improvise and (args.ensemble or args.ensemble_fast):
+        # Priority: TTT > Improvise + Ensemble > Ensemble only > Improvise only > Standard
+        if args.adapt:
+            # Test-Time Training mode: fine-tune on backstory, evaluate on novel
+            print("\n➡ TTT MODE ENABLED:")
+            print("  • Fine-tuning model on each backstory via SGD")
+            print("  • Then computing perplexity on novel")
+            print(f"  • LR={args.adapt_lr}, Steps={args.adapt_steps}")
+            
+            adapter = ContextualAdapter(
+                model_config=model_config,
+                inference_config=inference_config,
+                device=device,
+                adapt_lr=args.adapt_lr,
+                adapt_steps=args.adapt_steps,
+            )
+            calibration = run_adapt_calibration(
+                adapter=adapter,
+                loader=loader,
+                paths=paths,
+                args=args,
+                config_name=config_name,
+            )
+        elif args.improvise and (args.ensemble or args.ensemble_fast):
             # K-fold with Ensemble: Most robust option
             fast_mode = args.ensemble_fast
             calibration, fold_results = run_kfold_calibration(
