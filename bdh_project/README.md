@@ -169,34 +169,31 @@ python main.py --adapt --improvise --adapt-steps 4 --adapt-lr 5e-5 --ppl-chunks 
 | Mode | Command | Hypothesis | Metric |
 |------|---------|------------|--------|
 | **Baseline** | `--ablation baseline` | Control (standard flow) | Velocity (↓=consistent) |
-| **RCP** | `--ablation rcp` | Fixes style overfitting | Velocity Reduction (↑=consistent) |
+| **RCP** | `--ablation rcp` | ~~Deprecated~~ (broken metric) | N/A |
 | **LTC** | `--ablation ltc` | Fixes memory decay | Velocity (↓=consistent) |
-| **Combined** | `--ablation combined` | All 3 strategies | Velocity Reduction (↑=consistent) |
+| **Combined** | `--ablation combined` | Baseline + LTC + Masking | Velocity (↓=consistent) |
 
 **Quick Start**:
 ```bash
 # Control experiment (standard Backstory→Novel)
 python main.py --ablation baseline --small
 
-# Reverse Contextual Priming (Novel→Backstory)
-python main.py --ablation rcp --small
-
 # Liquid Time Constants (adaptive damping)
 python main.py --ablation ltc --small
 
-# Combined (RCP + LTC + Monosemantic Masking)
+# Combined (Baseline + LTC + Masking) - RECOMMENDED
 python main.py --ablation combined --small
 
 # With K-fold cross-validation for robust thresholds
-python main.py --ablation rcp --improvise --small
+python main.py --ablation ltc --improvise --small
 python main.py --ablation combined --improvise --small
 ```
 
 > [!NOTE]
 > **How Ablation Modes Work**:
-> - **RCP (Reverse Contextual Priming)**: Prime the Hebbian ρ-matrix with the full Novel first, then measure how much the state "shifts" when processing the Backstory. Returns **Velocity Reduction** `(V_base - V_primed) / V_base`. Positive % means novel context stabilized the state (Consistent).
+> - **Baseline**: Standard Backstory→Novel velocity (control)
 > - **LTC (Liquid Time Constants)**: Replaces fixed λ=0.99 damping with adaptive λ_t = σ(W·x_t + b). High-surprise inputs trigger stronger retention.
-> - **Monosemantic Masking** (combined mode): Focuses scoring on neurons relevant to backstory keywords, reducing global noise.
+> - **Combined (RECOMMENDED)**: Baseline velocity + LTC adaptive damping + **Monosemantic Masking** (focuses ρ-matrix distance on neurons relevant to backstory keywords).
 
 
 ---

@@ -1371,9 +1371,9 @@ def run_ablation_calibration(
     # Mode-specific descriptions
     mode_info = {
         "baseline": "Standard Backstory→Novel streaming (velocity-based)",
-        "rcp": "Reverse Contextual Priming: Novel→Backstory (velocity reduction)",
+        "rcp": "[DEPRECATED] Reverse Contextual Priming (broken metric)",
         "ltc": "Liquid Time Constants: Adaptive damping (velocity-based)",
-        "combined": "RCP + LTC + Monosemantic Masking (velocity reduction)",
+        "combined": "Baseline + LTC + Monosemantic Masking (velocity-based)",
     }
     print(f"  Mode: {mode_info.get(ablation_mode, ablation_mode)}")
     
@@ -1426,8 +1426,19 @@ def run_ablation_calibration(
                 )
             
             elif ablation_mode == "combined":
-                # COMBINED: RCP + Monosemantic Masking
+                # COMBINED: Baseline Velocity + LTC + Monosemantic Masking
                 # (LTC is enabled at model initialization)
+                # This is the most promising configuration:
+                # - Uses proven velocity metric (not broken RCP)
+                # - Adds adaptive damping for better memory retention
+                # - Focuses on semantically-relevant neurons via masking
+                
+                if novel_state is None:
+                    novel_state = wrapper.compute_novel_state(novel_path, verbose=False)
+                
+                backstory_state, _ = wrapper.prime_with_backstory(
+                    example['content'], verbose=False
+                )
                 
                 # Get monosemantic mask for backstory keywords
                 mask = get_monosemantic_mask(
@@ -1437,17 +1448,29 @@ def run_ablation_calibration(
                     device=wrapper.device,
                 )
                 
-                # RCP score (inverse perplexity)
-                score = wrapper.score_rcp(
-                    backstory_text=example['content'],
-                    novel_path=novel_path,
-                    novel_state=novel_state,
-                    max_probe_chunks=args.ppl_chunks if hasattr(args, 'ppl_chunks') else 20,
-                    verbose=False,
-                )
-                # Note: In combined mode, the mask would be used during scoring
-                # For simplicity, we use the RCP score directly
-                # (mask application is optional refinement)
+                # Apply mask to ρ-matrices before computing velocity
+                # This focuses the distance metric on relevant neurons
+                if mask is not None and backstory_state.rho_matrix is not None:
+                    masked_backstory_rho = backstory_state.rho_matrix * mask
+                    masked_novel_rho = novel_state.rho_matrix * mask
+                    
+                    # Compute velocity on masked states
+                    # Using cosine similarity on the masked ρ-matrices
+                    from torch.nn.functional import cosine_similarity
+                    
+                    # Flatten and compute distance
+                    rho1_flat = masked_backstory_rho.view(-1)
+                    rho2_flat = masked_novel_rho.view(-1)
+                    
+                    # Cosine distance = 1 - cosine_similarity
+                    cos_sim = cosine_similarity(rho1_flat.unsqueeze(0), rho2_flat.unsqueeze(0))
+                    score = (1.0 - cos_sim).item()
+                else:
+                    # Fallback: Standard velocity if masking fails
+                    score = wrapper.compute_velocity_from_states(
+                        backstory_state, novel_state, metric="cosine"
+                    )
+
             
             calibration.add_example(
                 example_id=example['id'],
@@ -1527,9 +1550,9 @@ def run_ablation_kfold_calibration(
     
     mode_info = {
         "baseline": "Standard Backstory→Novel streaming (velocity-based)",
-        "rcp": "Reverse Contextual Priming: Novel→Backstory (velocity reduction)",
+        "rcp": "[DEPRECATED] Reverse Contextual Priming (broken metric)",
         "ltc": "Liquid Time Constants: Adaptive damping (velocity-based)",
-        "combined": "RCP + LTC + Monosemantic Masking (velocity reduction)",
+        "combined": "Baseline + LTC + Monosemantic Masking (velocity-based)",
     }
     print(f"  Mode: {mode_info.get(ablation_mode, ablation_mode)}")
     print(f"  Folds: {n_folds}")
@@ -1581,19 +1604,37 @@ def run_ablation_kfold_calibration(
                 )
             
             elif ablation_mode == "combined":
+                # COMBINED: Baseline Velocity + LTC + Monosemantic Masking
+                if novel_state is None:
+                    novel_state = wrapper.compute_novel_state(novel_path, verbose=False)
+                
+                backstory_state, _ = wrapper.prime_with_backstory(
+                    example['content'], verbose=False
+                )
+                
+                # Get monosemantic mask
                 mask = get_monosemantic_mask(
                     backstory_text=example['content'],
                     model=wrapper.model,
                     tokenizer=wrapper.tokenizer,
                     device=wrapper.device,
                 )
-                score = wrapper.score_rcp(
-                    backstory_text=example['content'],
-                    novel_path=novel_path,
-                    novel_state=novel_state,
-                    max_probe_chunks=args.ppl_chunks if hasattr(args, 'ppl_chunks') else 20,
-                    verbose=False,
-                )
+                
+                # Apply mask to ρ-matrices
+                if mask is not None and backstory_state.rho_matrix is not None:
+                    masked_backstory_rho = backstory_state.rho_matrix * mask
+                    masked_novel_rho = novel_state.rho_matrix * mask
+                    
+                    from torch.nn.functional import cosine_similarity
+                    rho1_flat = masked_backstory_rho.view(-1)
+                    rho2_flat = masked_novel_rho.view(-1)
+                    cos_sim = cosine_similarity(rho1_flat.unsqueeze(0), rho2_flat.unsqueeze(0))
+                    score = (1.0 - cos_sim).item()
+                else:
+                    score = wrapper.compute_velocity_from_states(
+                        backstory_state, novel_state, metric="cosine"
+                    )
+
             
             example_scores[example['id']] = (score, example['label_binary'])
             
