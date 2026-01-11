@@ -1377,7 +1377,7 @@ def run_ablation_calibration(
         "baseline": "Standard Backstory→Novel streaming (velocity-based)",
         "rcp": "[DEPRECATED] Reverse Contextual Priming (broken metric)",
         "ltc": "Liquid Time Constants: Adaptive damping (velocity-based)",
-        "combined": "Baseline + LTC + Monosemantic Masking (velocity-based)",
+        "combined": "LTC + Masking + Multi-Scale Velocity (max across checkpoints)",
     }
     print(f"  Mode: {mode_info.get(ablation_mode, ablation_mode)}")
     
@@ -1430,15 +1430,16 @@ def run_ablation_calibration(
                 )
             
             elif ablation_mode == "combined":
-                # COMBINED: Baseline Velocity + LTC + Monosemantic Masking
+                # COMBINED: Baseline Velocity + LTC + Monosemantic Masking + Multi-Scale
                 # (LTC is enabled at model initialization)
                 # This is the most promising configuration:
                 # - Uses proven velocity metric (not broken RCP)
                 # - Adds adaptive damping for better memory retention
                 # - Focuses on semantically-relevant neurons via masking
+                # - Uses multi-scale velocity (max across all checkpoints)
                 
-                if novel_state is None:
-                    novel_state = wrapper.compute_novel_state(novel_path, verbose=False)
+                # Get novel states (should be a list of 4 checkpoints if cached)
+                novel_state_list = novel_states.get(book_name)
                 
                 backstory_state, _ = wrapper.prime_with_backstory(
                     example['content'], verbose=False
@@ -1452,28 +1453,52 @@ def run_ablation_calibration(
                     device=wrapper.device,
                 )
                 
-                # Apply mask to ρ-matrices before computing velocity
-                # This focuses the distance metric on relevant neurons
-                if mask is not None and backstory_state.rho_matrix is not None:
-                    masked_backstory_rho = backstory_state.rho_matrix * mask
-                    masked_novel_rho = novel_state.rho_matrix * mask
+                # MULTI-SCALE VELOCITY: Compute at all checkpoints, use MAX
+                # Hypothesis: Contradictions appear at different points in the novel
+                velocities = []
+                
+                if isinstance(novel_state_list, list) and len(novel_state_list) > 1:
+                    # We have multiple checkpoints (25%, 50%, 75%, 100%)
+                    for checkpoint_state in novel_state_list:
+                        if mask is not None and backstory_state.rho_matrix is not None:
+                            # Masked velocity
+                            masked_backstory_rho = backstory_state.rho_matrix * mask
+                            masked_novel_rho = checkpoint_state.rho_matrix * mask
+                            
+                            from torch.nn.functional import cosine_similarity
+                            rho1_flat = masked_backstory_rho.view(-1)
+                            rho2_flat = masked_novel_rho.view(-1)
+                            cos_sim = cosine_similarity(rho1_flat.unsqueeze(0), rho2_flat.unsqueeze(0))
+                            v = (1.0 - cos_sim).item()
+                        else:
+                            # Unmasked velocity (fallback)
+                            v = wrapper.compute_velocity_from_states(
+                                backstory_state, checkpoint_state, metric="cosine"
+                            )
+                        velocities.append(v)
                     
-                    # Compute velocity on masked states
-                    # Using cosine similarity on the masked ρ-matrices
-                    from torch.nn.functional import cosine_similarity
-                    
-                    # Flatten and compute distance
-                    rho1_flat = masked_backstory_rho.view(-1)
-                    rho2_flat = masked_novel_rho.view(-1)
-                    
-                    # Cosine distance = 1 - cosine_similarity
-                    cos_sim = cosine_similarity(rho1_flat.unsqueeze(0), rho2_flat.unsqueeze(0))
-                    score = (1.0 - cos_sim).item()
+                    # Use MAX velocity (peak contradiction signal)
+                    score = max(velocities)
                 else:
-                    # Fallback: Standard velocity if masking fails
-                    score = wrapper.compute_velocity_from_states(
-                        backstory_state, novel_state, metric="cosine"
-                    )
+                    # Fallback: Single state (no checkpoints)
+                    novel_state = novel_state_list if not isinstance(novel_state_list, list) else novel_state_list[-1]
+                    
+                    if novel_state is None:
+                        novel_state = wrapper.compute_novel_state(novel_path, verbose=False)
+                    
+                    if mask is not None and backstory_state.rho_matrix is not None:
+                        masked_backstory_rho = backstory_state.rho_matrix * mask
+                        masked_novel_rho = novel_state.rho_matrix * mask
+                        
+                        from torch.nn.functional import cosine_similarity
+                        rho1_flat = masked_backstory_rho.view(-1)
+                        rho2_flat = masked_novel_rho.view(-1)
+                        cos_sim = cosine_similarity(rho1_flat.unsqueeze(0), rho2_flat.unsqueeze(0))
+                        score = (1.0 - cos_sim).item()
+                    else:
+                        score = wrapper.compute_velocity_from_states(
+                            backstory_state, novel_state, metric="cosine"
+                        )
 
             
             calibration.add_example(
@@ -1556,7 +1581,7 @@ def run_ablation_kfold_calibration(
         "baseline": "Standard Backstory→Novel streaming (velocity-based)",
         "rcp": "[DEPRECATED] Reverse Contextual Priming (broken metric)",
         "ltc": "Liquid Time Constants: Adaptive damping (velocity-based)",
-        "combined": "Baseline + LTC + Monosemantic Masking (velocity-based)",
+        "combined": "LTC + Masking + Multi-Scale Velocity (max across checkpoints)",
     }
     print(f"  Mode: {mode_info.get(ablation_mode, ablation_mode)}")
     print(f"  Folds: {n_folds}")
@@ -1608,9 +1633,8 @@ def run_ablation_kfold_calibration(
                 )
             
             elif ablation_mode == "combined":
-                # COMBINED: Baseline Velocity + LTC + Monosemantic Masking
-                if novel_state is None:
-                    novel_state = wrapper.compute_novel_state(novel_path, verbose=False)
+                # COMBINED: Baseline Velocity + LTC + Monosemantic Masking + Multi-Scale
+                novel_state_list = novel_states.get(book_name)
                 
                 backstory_state, _ = wrapper.prime_with_backstory(
                     example['content'], verbose=False
@@ -1624,20 +1648,43 @@ def run_ablation_kfold_calibration(
                     device=wrapper.device,
                 )
                 
-                # Apply mask to ρ-matrices
-                if mask is not None and backstory_state.rho_matrix is not None:
-                    masked_backstory_rho = backstory_state.rho_matrix * mask
-                    masked_novel_rho = novel_state.rho_matrix * mask
-                    
-                    from torch.nn.functional import cosine_similarity
-                    rho1_flat = masked_backstory_rho.view(-1)
-                    rho2_flat = masked_novel_rho.view(-1)
-                    cos_sim = cosine_similarity(rho1_flat.unsqueeze(0), rho2_flat.unsqueeze(0))
-                    score = (1.0 - cos_sim).item()
+                # Multi-scale velocity
+                velocities = []
+                if isinstance(novel_state_list, list) and len(novel_state_list) > 1:
+                    for checkpoint_state in novel_state_list:
+                        if mask is not None and backstory_state.rho_matrix is not None:
+                            masked_backstory_rho = backstory_state.rho_matrix * mask
+                            masked_novel_rho = checkpoint_state.rho_matrix * mask
+                            
+                            from torch.nn.functional import cosine_similarity
+                            rho1_flat = masked_backstory_rho.view(-1)
+                            rho2_flat = masked_novel_rho.view(-1)
+                            cos_sim = cosine_similarity(rho1_flat.unsqueeze(0), rho2_flat.unsqueeze(0))
+                            v = (1.0 - cos_sim).item()
+                        else:
+                            v = wrapper.compute_velocity_from_states(
+                                backstory_state, checkpoint_state, metric="cosine"
+                            )
+                        velocities.append(v)
+                    score = max(velocities)
                 else:
-                    score = wrapper.compute_velocity_from_states(
-                        backstory_state, novel_state, metric="cosine"
-                    )
+                    novel_state = novel_state_list if not isinstance(novel_state_list, list) else novel_state_list[-1]
+                    if novel_state is None:
+                        novel_state = wrapper.compute_novel_state(novel_path, verbose=False)
+                    
+                    if mask is not None and backstory_state.rho_matrix is not None:
+                        masked_backstory_rho = backstory_state.rho_matrix * mask
+                        masked_novel_rho = novel_state.rho_matrix * mask
+                        
+                        from torch.nn.functional import cosine_similarity
+                        rho1_flat = masked_backstory_rho.view(-1)
+                        rho2_flat = masked_novel_rho.view(-1)
+                        cos_sim = cosine_similarity(rho1_flat.unsqueeze(0), rho2_flat.unsqueeze(0))
+                        score = (1.0 - cos_sim).item()
+                    else:
+                        score = wrapper.compute_velocity_from_states(
+                            backstory_state, novel_state, metric="cosine"
+                        )
 
             
             example_scores[example['id']] = (score, example['label_binary'])
