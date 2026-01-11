@@ -86,16 +86,33 @@ class RecurrentBDH(nn.Module):
     velocity metrics for consistency detection.
     """
     
-    def __init__(self, config, damping: float = 0.99):
+    def __init__(self, config, damping: float = 0.99, use_ltc: bool = False):
+        """
+        Initialize RecurrentBDH model.
+        
+        Args:
+            config: Model configuration
+            damping: Fixed damping factor for Hebbian updates (default: 0.99)
+            use_ltc: If True, use Liquid Time Constants (input-dependent adaptive damping)
+                     instead of fixed damping. LTC hypothesis: High-surprise inputs 
+                     should trigger stronger retention.
+        """
         super().__init__()
         self.config = config
         self.damping = damping
+        self.use_ltc = use_ltc
         
         # Core dimensions
         self.n_layer = config.n_layer
         self.n_embd = config.n_embd
         self.n_head = config.n_head
         self.N = config.mlp_internal_dim_multiplier * config.n_embd // config.n_head
+        
+        # LTC: Input-dependent gating for adaptive damping
+        # λ_t = σ(W_gate · x_t + b) where high surprise → stronger retention
+        if use_ltc:
+            self.damping_gate = nn.Linear(config.n_embd, 1)
+            nn.init.zeros_(self.damping_gate.bias)  # Start near 0.5 sigmoid output
         
         # Build BDH components (similar to original bdh.py but with state tracking)
         self._build_model()
@@ -289,7 +306,19 @@ class RecurrentBDH(nn.Module):
             if state is not None and state.rho_matrix is not None:
                 # Apply damping and accumulate
                 new_state.prev_rho = state.rho_matrix.clone()
-                new_state.rho_matrix = self.damping * state.rho_matrix
+                
+                # LTC: Use adaptive damping based on input
+                if self.use_ltc:
+                    # Compute adaptive lambda from mean input embedding
+                    # x shape: [B, 1, T, D] -> mean over T gives [B, 1, D]
+                    x_mean = x.mean(dim=2)  # [B, 1, D]
+                    adaptive_lambda = torch.sigmoid(self.damping_gate(x_mean))  # [B, 1, 1]
+                    # Squeeze to match rho_matrix shape [B, nh*N*D]
+                    adaptive_lambda = adaptive_lambda.squeeze(-1).squeeze(-1).unsqueeze(-1)  # [B, 1]
+                    new_state.rho_matrix = adaptive_lambda * state.rho_matrix
+                else:
+                    new_state.rho_matrix = self.damping * state.rho_matrix
+                
                 if total_rho_update is not None:
                     new_state.rho_matrix = new_state.rho_matrix + total_rho_update
             elif total_rho_update is not None:
@@ -324,11 +353,18 @@ class RecurrentBDH(nn.Module):
         )
 
 
-def load_pretrained_bdh(config, device: torch.device) -> RecurrentBDH:
+def load_pretrained_bdh(config, device: torch.device, use_ltc: bool = False) -> RecurrentBDH:
     """
     Create RecurrentBDH model.
+    
+    Args:
+        config: Model configuration
+        device: Target device
+        use_ltc: If True, enable Liquid Time Constants for adaptive damping
+    
     Note: We use randomly initialized weights since no pretrained checkpoint exists.
     """
-    model = RecurrentBDH(config, damping=0.99)
+    model = RecurrentBDH(config, damping=0.99, use_ltc=use_ltc)
     model = model.to(device)
     return model
+

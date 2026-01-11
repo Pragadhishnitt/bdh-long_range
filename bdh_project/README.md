@@ -2,7 +2,11 @@
 
 **Stateful Recurrent Memory for Long-Context Reasoning**
 
-This project implements a **Baby Dragon Hatchling (BDH)** architecture to detect narrative inconsistencies in long novels (100k+ words). It leverages a stateful **ρ-matrix (Hebbian memory)** to track character traits and detect contradictions.
+This project implements a **Baby Dragon Hatchling (BDH)** recurrent architecture to detect narrative inconsistencies in long novels (100k+ words). It leverages a stateful **ρ-matrix (Hebbian memory)** to track character traits and detect contradictions.
+
+> [!NOTE]
+> **BDH** stands for **Baby Dragon Hatchling**, not "Bidirectional Hebbian" or any other expansion.
+
 
 ## 🚀 Quick Start
 
@@ -115,6 +119,80 @@ python main.py --perplexity --improvise
 3. **Inference**: Predicts for 60 test examples.
 
 **Time**: ~60-80 minutes total.
+
+### 9. Test-Time Training (TTT) Mode [EXPERIMENTAL]
+
+**Status**: ⚠️ **Under Research** - Results not yet competitive with baseline (~61% vs ~70%)
+
+**Hypothesis**: Fine-tune the BDH model on the backstory before evaluating the novel. The model should be more surprised (higher perplexity) by contradictory novels.
+
+**Command**:
+```bash
+# Standard TTT
+python main.py --adapt --train
+
+# TTT with K-fold (recommended)
+python main.py --adapt --improvise --train
+
+# Current best configuration (peak perplexity)
+python main.py --adapt --improvise --adapt-steps 4 --adapt-lr 5e-5 --ppl-chunks 50 --peak-ppl --train
+```
+
+**Parameters**:
+- `--adapt-steps`: Number of SGD steps for adaptation (default: 10, recommended: 4)
+- `--adapt-lr`: Learning rate for adaptation (default: 1e-4, recommended: 5e-5)
+- `--ppl-chunks`: Number of chunks to evaluate (default: 20, recommended: 50)
+- `--peak-ppl`: Use peak (max) perplexity instead of mean (default: enabled)
+- `--no-peak-ppl`: Use mean perplexity (original behavior)
+
+**Experimental Results** (see `TTT_RESEARCH_LOG.md` for full details):
+- **Experiment 1** (10 steps, 1e-4 LR, 100 chunks, mean): 67.5% accuracy, Z=0.31
+- **Experiment 2** (18 steps, 1e-4 LR, 100 chunks, K-fold): 58.8% accuracy (worse!)
+- **Experiment 3** (4 steps, 5e-5 LR, 50 chunks, K-fold): 61.3% accuracy, Z=0.20
+- **Experiment 4** (4 steps, 5e-5 LR, 50 chunks, peak ppl): ⏳ Pending
+
+**Key Findings**:
+1. **Style vs. Semantics**: Model learns writing style faster than semantic facts
+2. **Signal Dilution**: Mean perplexity dilutes sparse contradiction signals
+3. **Overfitting**: More adaptation steps (>10) hurt performance
+4. **Stability**: K-fold cross-validation provides robust thresholds
+
+**Time**: ~30-35 minutes (K-fold)
+
+> [!CAUTION]
+> TTT is currently **not recommended** for production use. It underperforms the baseline velocity-based approach. See `TTT_RESEARCH_LOG.md` for detailed experimental history and future research directions.
+
+### 10. **Ablation Protocol (Research Mode)**
+
+**NEW**: Systematic experimentation with 4 distinct modes to improve accuracy from 60% to >85%.
+
+| Mode | Command | Hypothesis | Metric |
+|------|---------|------------|--------|
+| **Baseline** | `--ablation baseline` | Control (standard flow) | Velocity (↓=consistent) |
+| **RCP** | `--ablation rcp` | Fixes style overfitting | Inverse PPL (↑=consistent) |
+| **LTC** | `--ablation ltc` | Fixes memory decay | Velocity (↓=consistent) |
+| **Combined** | `--ablation combined` | All 3 strategies | Inverse PPL (↑=consistent) |
+
+**Quick Start**:
+```bash
+# Control experiment (standard Backstory→Novel)
+python main.py --ablation baseline --small
+
+# Reverse Contextual Priming (Novel→Backstory)
+python main.py --ablation rcp --small
+
+# Liquid Time Constants (adaptive damping)
+python main.py --ablation ltc --small
+
+# Combined (RCP + LTC + Monosemantic Masking)
+python main.py --ablation combined --small
+```
+
+> [!NOTE]
+> **How Ablation Modes Work**:
+> - **RCP (Reverse Contextual Priming)**: Prime the Hebbian ρ-matrix with the full Novel first, then probe with Backstory. Returns inverse perplexity (higher = novel's style matches backstory).
+> - **LTC (Liquid Time Constants)**: Replaces fixed λ=0.99 damping with adaptive λ_t = σ(W·x_t + b). High-surprise inputs trigger stronger retention.
+> - **Monosemantic Masking** (combined mode): Focuses scoring on neurons relevant to backstory keywords, reducing global noise.
 
 
 ---

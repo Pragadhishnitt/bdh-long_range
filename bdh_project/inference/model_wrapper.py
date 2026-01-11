@@ -41,11 +41,13 @@ class BDHReasoningWrapper:
         model_config: BDHModelConfig,
         inference_config: InferenceConfig,
         device: Optional[torch.device] = None,
+        use_ltc: bool = False,
     ):
         self.model_config = model_config
         self.inference_config = inference_config
         self.device = device or get_device()
         self.dtype = get_dtype(self.device)
+        self.use_ltc = use_ltc
         
         # Initialize tokenizer
         self.tokenizer = ByteTokenizer()
@@ -64,7 +66,8 @@ class BDHReasoningWrapper:
         """Load BDH model with configuration."""
         model = RecurrentBDH(
             self.model_config, 
-            damping=self.inference_config.damping
+            damping=self.inference_config.damping,
+            use_ltc=self.use_ltc,
         )
         model = model.to(self.device)
         return model
@@ -844,4 +847,180 @@ class BDHReasoningWrapper:
             "chunk_size": self.inference_config.chunk_size,
             "device": str(self.device),
             "dtype": str(self.dtype),
+            "use_ltc": getattr(self.model, 'use_ltc', False),
         }
+    
+    # =========================================================================
+    # REVERSE CONTEXTUAL PRIMING (RCP) METHODS
+    # =========================================================================
+    # RCP Hypothesis: Style overfitting is fixed by training on Novel FIRST.
+    # Flow: Prime with Novel (100k+ words) → Freeze state → Probe with Backstory
+    # Metric: Inverse Perplexity of Backstory (High IP = Consistent)
+    # =========================================================================
+    
+    @torch.no_grad()
+    def prime_with_novel(
+        self,
+        novel_path: Path,
+        verbose: bool = True,
+    ) -> Tuple[RecurrentState, float]:
+        """
+        RCP Phase 1: Prime by streaming entire novel to saturate Hebbian state ρ.
+        
+        This inverts the standard flow (backstory→novel) to (novel→backstory).
+        The hypothesis is that priming with the novel first prevents style overfitting.
+        
+        Args:
+            novel_path: Path to novel text file
+            verbose: Show progress bar
+            
+        Returns:
+            rho_final: Saturated Hebbian state after reading entire novel
+            total_tokens: Number of tokens processed
+        """
+        # Load and tokenize novel
+        with open(novel_path, 'r', encoding='utf-8', errors='replace') as f:
+            novel_text = f.read()
+        novel_text = normalize_text(novel_text)
+        
+        tokens = self._tokenize(novel_text)
+        chunks = self._chunk_tokens(tokens)
+        total_tokens = tokens.size(1)
+        
+        state = self.model.reset_state()
+        
+        desc = f"RCP Priming: {novel_path.name[:30]}... ({len(chunks)} chunks)"
+        chunk_iter = tqdm(chunks, desc=desc, leave=False) if verbose else chunks
+        
+        with self.amp_context:
+            for chunk_idx, chunk in enumerate(chunk_iter):
+                _, state, _ = self.model(
+                    chunk,
+                    state=state,
+                    return_state=True,
+                    return_rho_update=True,  # Must be True to update rho_matrix
+                )
+                
+                # Memory management
+                if chunk_idx % 10 == 0:
+                    state.detach()
+        
+        # Freeze: Detach final state from computation graph
+        state.detach()
+        
+        return state, total_tokens
+    
+    @torch.no_grad()
+    def probe_with_backstory(
+        self,
+        backstory_text: str,
+        primed_state: RecurrentState,
+        max_chunks: Optional[int] = None,
+        verbose: bool = False,
+    ) -> float:
+        """
+        RCP Phase 2: Probe with backstory using novel's saturated state.
+        
+        Feeds the backstory as a query using ρ_final as the initial state.
+        Returns inverse perplexity (higher = more consistent).
+        
+        Args:
+            backstory_text: Character backstory to probe
+            primed_state: Frozen state from prime_with_novel()
+            max_chunks: Limit chunks (None = all)
+            verbose: Show progress
+            
+        Returns:
+            inverse_perplexity: 1 / perplexity (higher = more consistent)
+        """
+        import math
+        
+        tokens = self._tokenize(backstory_text)
+        chunks = self._chunk_tokens(tokens)
+        
+        if max_chunks is not None:
+            chunks = chunks[:max_chunks]
+        
+        # Start from novel's saturated state
+        state = primed_state.clone()
+        total_loss = 0.0
+        total_tokens = 0
+        
+        with self.amp_context:
+            for chunk in chunks:
+                # Get logits using primed state
+                logits, state, _ = self.model(
+                    chunk,
+                    state=state,
+                    return_state=True,
+                    return_rho_update=True,
+                )
+                
+                # Compute cross-entropy loss (next-token prediction)
+                shift_logits = logits[:, :-1, :].contiguous()
+                shift_targets = chunk[:, 1:].contiguous()
+                
+                loss_fn = torch.nn.CrossEntropyLoss(reduction='sum')
+                loss = loss_fn(
+                    shift_logits.view(-1, shift_logits.size(-1)),
+                    shift_targets.view(-1)
+                )
+                
+                total_loss += loss.item()
+                total_tokens += shift_targets.numel()
+                
+                state.detach()
+        
+        if total_tokens == 0:
+            return 1.0
+        
+        # Compute perplexity and return inverse
+        mean_loss = total_loss / total_tokens
+        perplexity = math.exp(min(mean_loss, 20))  # Cap to prevent overflow
+        
+        # Inverse perplexity: Higher = more consistent (model is less surprised)
+        inverse_perplexity = 1.0 / perplexity
+        
+        return float(inverse_perplexity)
+    
+    @torch.no_grad()
+    def score_rcp(
+        self,
+        backstory_text: str,
+        novel_path: Path,
+        novel_state: Optional[RecurrentState] = None,
+        max_probe_chunks: Optional[int] = None,
+        verbose: bool = False,
+    ) -> float:
+        """
+        RCP Full Flow: Prime with Novel → Freeze → Probe with Backstory.
+        
+        Combines prime_with_novel and probe_with_backstory into a single call.
+        
+        Args:
+            backstory_text: Character backstory
+            novel_path: Path to novel file
+            novel_state: Pre-computed novel state (if cached)
+            max_probe_chunks: Limit backstory chunks for probing
+            verbose: Show progress
+            
+        Returns:
+            inverse_perplexity: RCP score (higher = more consistent)
+        """
+        # Phase 1: Prime with novel (or use cached state)
+        if novel_state is None:
+            primed_state, _ = self.prime_with_novel(novel_path, verbose=verbose)
+        else:
+            primed_state = novel_state.clone()
+            primed_state.detach()
+        
+        # Phase 2: Probe with backstory
+        inverse_ppl = self.probe_with_backstory(
+            backstory_text,
+            primed_state,
+            max_chunks=max_probe_chunks,
+            verbose=verbose,
+        )
+        
+        return inverse_ppl
+

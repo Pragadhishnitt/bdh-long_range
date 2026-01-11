@@ -1,6 +1,6 @@
 # BDH Track B: Implementation Walkthrough
 
-Binary classification of narrative consistency using Baby Dragon Hatchling architecture.
+Binary classification of narrative consistency using **Baby Dragon Hatchling (BDH)** recurrent architecture.
 
 ---
 
@@ -75,11 +75,15 @@ The system offers flexible configuration across three dimensions: **Processing**
 | **Velocity** | (default) | Checks rate of memory change. Simple but noisy. |
 | **Ensemble** | `--ensemble-fast` | **Velocity + Divergence**. Majority vote. "Free" accuracy boost. |
 | **Full Ensemble** | `--ensemble` | Velocity + Divergence + Perplexity. Slower, slightly better. |
+| **TTT** [EXPERIMENTAL] | `--adapt` | Test-Time Training: Fine-tune on backstory, measure perplexity. **Not recommended** (~61% accuracy). See `TTT_RESEARCH_LOG.md`. |
 
 ### 🏆 Recommended Configurations
 
 1.  **Fast Iteration**: `python main.py --full-trajectory --ensemble-fast`
 2.  **Final Submission**: `python main.py --full-trajectory --improvise --ensemble-fast`
+
+> [!WARNING]
+> **Do NOT use `--adapt` (TTT) for production.** It is an experimental feature that currently underperforms the baseline. Included for research purposes only.
 
 ---
 
