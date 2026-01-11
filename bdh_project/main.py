@@ -235,6 +235,10 @@ Examples:
         "--use-ltc", action="store_true", dest="use_ltc",
         help="Enable Liquid Time Constants (adaptive damping) in the model"
     )
+    parser.add_argument(
+        "--folds", type=int, default=4,
+        help="Number of folds for K-fold cross-validation (default: 4)"
+    )
     
     return parser.parse_args()
 
@@ -2297,7 +2301,7 @@ def main():
     
     if args.improvise:
         print("\n➡ IMPROVISE MODE ENABLED:")
-        print("  • K-fold cross-validation (4 folds, median threshold)")
+        print(f"  • K-fold cross-validation ({args.folds} folds, median threshold)")
         if mode == "cached":
             print("  • Multi-checkpoint trajectory caching (25%, 50%, 75%, 100%)")
         elif mode == "streaming":
@@ -2356,7 +2360,7 @@ def main():
                 # ABLATION + K-FOLD: Robust threshold via cross-validation
                 print(f"\n➡ ABLATION + K-FOLD MODE: {ablation_mode.upper()}")
                 print("  • Computing ablation scores for all examples (once)")
-                print("  • Then performing 4-fold cross-validation")
+                print(f"  • Then performing {args.folds}-fold cross-validation")
                 
                 calibration, fold_results = run_ablation_kfold_calibration(
                     wrapper=wrapper,
@@ -2366,6 +2370,7 @@ def main():
                     args=args,
                     config_name=config_name,
                     ablation_mode=ablation_mode,
+                    n_folds=args.folds,
                 )
             else:
                 # Standard ablation (no K-fold)
