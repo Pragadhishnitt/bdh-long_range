@@ -1038,9 +1038,13 @@ class BDHReasoningWrapper:
         )
         ppl_primed = 1.0 / inv_ppl_primed if inv_ppl_primed > 0 else 1000.0
         
-        # Delta Perplexity: How much did the novel reduce surprise?
-        # Higher = More Consistent
-        delta_ppl = ppl_baseline - ppl_primed
+        # Relative Delta Perplexity: Percentage improvement
+        # Normalizes for intrinsic difficulty of the text
+        # Score = (Base - Primed) / Base
+        if ppl_baseline > 0:
+            relative_delta = (ppl_baseline - ppl_primed) / ppl_baseline
+        else:
+            relative_delta = 0.0
         
-        return float(delta_ppl)
+        return float(relative_delta)
 

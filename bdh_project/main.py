@@ -1371,9 +1371,9 @@ def run_ablation_calibration(
     # Mode-specific descriptions
     mode_info = {
         "baseline": "Standard Backstory→Novel streaming (velocity-based)",
-        "rcp": "Reverse Contextual Priming: Novel→Backstory (delta perplexity)",
+        "rcp": "Reverse Contextual Priming: Novel→Backstory (relative delta ppl)",
         "ltc": "Liquid Time Constants: Adaptive damping (velocity-based)",
-        "combined": "RCP + LTC + Monosemantic Masking (delta perplexity)",
+        "combined": "RCP + LTC + Monosemantic Masking (relative delta ppl)",
     }
     print(f"  Mode: {mode_info.get(ablation_mode, ablation_mode)}")
     
@@ -1473,7 +1473,7 @@ def run_ablation_calibration(
     
     print(f"\n{'─'*40}")
     print(f"ABLATION [{ablation_mode.upper()}] RESULTS:")
-    print(f"  Metric: {'Delta Perplexity (↑=consistent)' if is_inverse_metric else 'Velocity (↓=consistent)'}")
+    print(f"  Metric: {'Relative Delta PPL (↑=consistent)' if is_inverse_metric else 'Velocity (↓=consistent)'}")
     print(f"  Optimal threshold: {calibration.optimal_threshold:.6f}")
     print(f"  Accuracy: {calibration.train_accuracy:.2%}")
     print(f"  F1 Score: {calibration.f1:.4f}")
@@ -1527,9 +1527,9 @@ def run_ablation_kfold_calibration(
     
     mode_info = {
         "baseline": "Standard Backstory→Novel streaming (velocity-based)",
-        "rcp": "Reverse Contextual Priming: Novel→Backstory (delta perplexity)",
+        "rcp": "Reverse Contextual Priming: Novel→Backstory (relative delta ppl)",
         "ltc": "Liquid Time Constants: Adaptive damping (velocity-based)",
-        "combined": "RCP + LTC + Monosemantic Masking (delta perplexity)",
+        "combined": "RCP + LTC + Monosemantic Masking (relative delta ppl)",
     }
     print(f"  Mode: {mode_info.get(ablation_mode, ablation_mode)}")
     print(f"  Folds: {n_folds}")
