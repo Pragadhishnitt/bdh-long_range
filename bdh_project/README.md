@@ -169,9 +169,9 @@ python main.py --adapt --improvise --adapt-steps 4 --adapt-lr 5e-5 --ppl-chunks 
 | Mode | Command | Hypothesis | Metric |
 |------|---------|------------|--------|
 | **Baseline** | `--ablation baseline` | Control (standard flow) | Velocity (↓=consistent) |
-| **RCP** | `--ablation rcp` | Fixes style overfitting | Inverse PPL (↑=consistent) |
+| **RCP** | `--ablation rcp` | Fixes style overfitting | Delta PPL (↑=consistent) |
 | **LTC** | `--ablation ltc` | Fixes memory decay | Velocity (↓=consistent) |
-| **Combined** | `--ablation combined` | All 3 strategies | Inverse PPL (↑=consistent) |
+| **Combined** | `--ablation combined` | All 3 strategies | Delta PPL (↑=consistent) |
 
 **Quick Start**:
 ```bash
@@ -186,11 +186,15 @@ python main.py --ablation ltc --small
 
 # Combined (RCP + LTC + Monosemantic Masking)
 python main.py --ablation combined --small
+
+# With K-fold cross-validation for robust thresholds
+python main.py --ablation rcp --improvise --small
+python main.py --ablation combined --improvise --small
 ```
 
 > [!NOTE]
 > **How Ablation Modes Work**:
-> - **RCP (Reverse Contextual Priming)**: Prime the Hebbian ρ-matrix with the full Novel first, then probe with Backstory. Returns inverse perplexity (higher = novel's style matches backstory).
+> - **RCP (Reverse Contextual Priming)**: Prime the Hebbian ρ-matrix with the full Novel first, then probe with Backstory. Returns **Delta Perplexity** (PPL_base - PPL_primed). Positive score means novel context helped predict backstory.
 > - **LTC (Liquid Time Constants)**: Replaces fixed λ=0.99 damping with adaptive λ_t = σ(W·x_t + b). High-surprise inputs trigger stronger retention.
 > - **Monosemantic Masking** (combined mode): Focuses scoring on neurons relevant to backstory keywords, reducing global noise.
 

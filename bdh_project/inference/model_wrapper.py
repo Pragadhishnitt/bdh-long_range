@@ -995,7 +995,12 @@ class BDHReasoningWrapper:
         """
         RCP Full Flow: Prime with Novel → Freeze → Probe with Backstory.
         
-        Combines prime_with_novel and probe_with_backstory into a single call.
+        IMPROVED METRIC: Delta Perplexity
+        Score = PPL(Backstory|Empty) - PPL(Backstory|Novel)
+        
+        - Positive Score: Novel context HELPED predict backstory (Consistent)
+        - Negative Score: Novel context HURT prediction (Contradict/Surprise)
+        - Near Zero: Novel context irrelevant
         
         Args:
             backstory_text: Character backstory
@@ -1005,22 +1010,37 @@ class BDHReasoningWrapper:
             verbose: Show progress
             
         Returns:
-            inverse_perplexity: RCP score (higher = more consistent)
+            delta_perplexity: Improvement in perplexity due to priming
         """
-        # Phase 1: Prime with novel (or use cached state)
+        # Phase 1: Get Baseline Perplexity (Intrinsic difficulty of backstory)
+        # We use an empty state to measure how hard the backstory is to predict on its own
+        empty_state = self.model.reset_state()
+        inv_ppl_baseline = self.probe_with_backstory(
+            backstory_text,
+            empty_state,
+            max_chunks=max_probe_chunks,
+            verbose=False,
+        )
+        ppl_baseline = 1.0 / inv_ppl_baseline if inv_ppl_baseline > 0 else 1000.0
+        
+        # Phase 2: Get Primed Perplexity (Difficulty given novel context)
         if novel_state is None:
             primed_state, _ = self.prime_with_novel(novel_path, verbose=verbose)
         else:
             primed_state = novel_state.clone()
             primed_state.detach()
         
-        # Phase 2: Probe with backstory
-        inverse_ppl = self.probe_with_backstory(
+        inv_ppl_primed = self.probe_with_backstory(
             backstory_text,
             primed_state,
             max_chunks=max_probe_chunks,
             verbose=verbose,
         )
+        ppl_primed = 1.0 / inv_ppl_primed if inv_ppl_primed > 0 else 1000.0
         
-        return inverse_ppl
+        # Delta Perplexity: How much did the novel reduce surprise?
+        # Higher = More Consistent
+        delta_ppl = ppl_baseline - ppl_primed
+        
+        return float(delta_ppl)
 

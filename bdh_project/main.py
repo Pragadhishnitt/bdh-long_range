@@ -1371,9 +1371,9 @@ def run_ablation_calibration(
     # Mode-specific descriptions
     mode_info = {
         "baseline": "Standard Backstory→Novel streaming (velocity-based)",
-        "rcp": "Reverse Contextual Priming: Novel→Backstory (inverse perplexity)",
+        "rcp": "Reverse Contextual Priming: Novel→Backstory (delta perplexity)",
         "ltc": "Liquid Time Constants: Adaptive damping (velocity-based)",
-        "combined": "RCP + LTC + Monosemantic Masking (inverse perplexity)",
+        "combined": "RCP + LTC + Monosemantic Masking (delta perplexity)",
     }
     print(f"  Mode: {mode_info.get(ablation_mode, ablation_mode)}")
     
@@ -1473,7 +1473,7 @@ def run_ablation_calibration(
     
     print(f"\n{'─'*40}")
     print(f"ABLATION [{ablation_mode.upper()}] RESULTS:")
-    print(f"  Metric: {'Inverse Perplexity (↑=consistent)' if is_inverse_metric else 'Velocity (↓=consistent)'}")
+    print(f"  Metric: {'Delta Perplexity (↑=consistent)' if is_inverse_metric else 'Velocity (↓=consistent)'}")
     print(f"  Optimal threshold: {calibration.optimal_threshold:.6f}")
     print(f"  Accuracy: {calibration.train_accuracy:.2%}")
     print(f"  F1 Score: {calibration.f1:.4f}")
@@ -1486,6 +1486,214 @@ def run_ablation_calibration(
     save_checkpoint(calibration, checkpoint_path, config_name)
     
     return calibration
+
+
+def run_ablation_kfold_calibration(
+    wrapper: BDHReasoningWrapper,
+    loader: DataLoader,
+    novel_states: Dict[str, any],
+    paths: Dict[str, Path],
+    args: argparse.Namespace,
+    config_name: str,
+    ablation_mode: str,
+    n_folds: int = 4,
+) -> Tuple[CalibrationResult, List[Dict]]:
+    """
+    Run K-fold cross-validation for ablation protocol modes.
+    
+    Optimization: Compute ablation scores ONCE for all examples,
+    then perform K-fold CV on those pre-computed scores.
+    
+    Args:
+        wrapper: BDH model wrapper
+        loader: Data loader
+        novel_states: Pre-computed novel states
+        paths: Output paths
+        args: CLI arguments
+        config_name: Model config name
+        ablation_mode: One of 'baseline', 'rcp', 'ltc', 'combined'
+        n_folds: Number of CV folds
+        
+    Returns:
+        final_calibration: Calibration with median threshold
+        fold_results: List of per-fold results
+    """
+    from sklearn.model_selection import StratifiedKFold
+    from utils.monosemantic import get_monosemantic_mask
+    
+    print("\n" + "="*60)
+    print(f"ABLATION K-FOLD CROSS-VALIDATION: {ablation_mode.upper()}")
+    print("="*60)
+    
+    mode_info = {
+        "baseline": "Standard Backstory→Novel streaming (velocity-based)",
+        "rcp": "Reverse Contextual Priming: Novel→Backstory (delta perplexity)",
+        "ltc": "Liquid Time Constants: Adaptive damping (velocity-based)",
+        "combined": "RCP + LTC + Monosemantic Masking (delta perplexity)",
+    }
+    print(f"  Mode: {mode_info.get(ablation_mode, ablation_mode)}")
+    print(f"  Folds: {n_folds}")
+    
+    train_examples = loader.get_train_examples()
+    if args.limit:
+        train_examples = train_examples[:args.limit]
+    
+    # =========================================================
+    # PHASE 1: Compute ablation scores for ALL examples (once)
+    # =========================================================
+    print(f"\n{'─'*40}")
+    print("PHASE 1: Computing ablation scores for all examples...")
+    print(f"{'─'*40}")
+    
+    example_scores = {}  # {example_id: (score, label)}
+    
+    pbar = tqdm(train_examples, desc=f"Ablation [{ablation_mode}]")
+    
+    for example in pbar:
+        try:
+            book_name = example['book_name']
+            novel_path = loader.get_book_path(book_name)
+            
+            novel_state = novel_states.get(book_name)
+            if isinstance(novel_state, list):
+                novel_state = novel_state[-1]
+            
+            score = 0.0
+            
+            if ablation_mode == "baseline" or ablation_mode == "ltc":
+                if novel_state is None:
+                    novel_state = wrapper.compute_novel_state(novel_path, verbose=False)
+                
+                backstory_state, _ = wrapper.prime_with_backstory(
+                    example['content'], verbose=False
+                )
+                score = wrapper.compute_velocity_from_states(
+                    backstory_state, novel_state, metric="cosine"
+                )
+            
+            elif ablation_mode == "rcp":
+                score = wrapper.score_rcp(
+                    backstory_text=example['content'],
+                    novel_path=novel_path,
+                    novel_state=novel_state,
+                    max_probe_chunks=args.ppl_chunks if hasattr(args, 'ppl_chunks') else 20,
+                    verbose=False,
+                )
+            
+            elif ablation_mode == "combined":
+                mask = get_monosemantic_mask(
+                    backstory_text=example['content'],
+                    model=wrapper.model,
+                    tokenizer=wrapper.tokenizer,
+                    device=wrapper.device,
+                )
+                score = wrapper.score_rcp(
+                    backstory_text=example['content'],
+                    novel_path=novel_path,
+                    novel_state=novel_state,
+                    max_probe_chunks=args.ppl_chunks if hasattr(args, 'ppl_chunks') else 20,
+                    verbose=False,
+                )
+            
+            example_scores[example['id']] = (score, example['label_binary'])
+            
+            pbar.set_postfix({"score": f"{score:.4f}"})
+            
+        except Exception as e:
+            print(f"\n⚠ Error: {e}")
+            continue
+    
+    # =========================================================
+    # PHASE 2: K-fold cross-validation on pre-computed scores
+    # =========================================================
+    print(f"\n{'─'*40}")
+    print(f"PHASE 2: {n_folds}-Fold Cross-Validation...")
+    print(f"{'─'*40}")
+    
+    labels = [ex['label_binary'] for ex in train_examples if ex['id'] in example_scores]
+    example_ids = [ex['id'] for ex in train_examples if ex['id'] in example_scores]
+    
+    kfold = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=42)
+    fold_results = []
+    fold_thresholds = []
+    all_scores = []
+    all_labels = []
+    
+    for fold_idx, (train_idx, val_idx) in enumerate(kfold.split(example_ids, labels)):
+        print(f"\n  Fold {fold_idx + 1}/{n_folds}:")
+        
+        # Get train/val examples for this fold
+        train_ids = [example_ids[i] for i in train_idx]
+        val_ids = [example_ids[i] for i in val_idx]
+        
+        # Build train calibration
+        train_cal = CalibrationResult()
+        for eid in train_ids:
+            score, label = example_scores[eid]
+            train_cal.add_example(eid, score, label)
+            all_scores.append(score)
+            all_labels.append(label)
+        
+        threshold = train_cal.compute_optimal_threshold()
+        fold_thresholds.append(threshold)
+        
+        # Validate
+        val_correct = 0
+        for eid in val_ids:
+            score, label = example_scores[eid]
+            pred = train_cal.predict(score)
+            if pred == label:
+                val_correct += 1
+        
+        val_accuracy = val_correct / len(val_ids) if val_ids else 0.0
+        
+        fold_results.append({
+            "fold": fold_idx + 1,
+            "threshold": threshold,
+            "train_accuracy": train_cal.train_accuracy,
+            "train_f1": train_cal.f1,
+            "val_accuracy": val_accuracy,
+        })
+        
+        print(f"    Threshold: {threshold:.6f}")
+        print(f"    Train Acc: {train_cal.train_accuracy:.2%}, Val Acc: {val_accuracy:.2%}")
+    
+    # Aggregate
+    median_threshold = float(np.median(fold_thresholds))
+    mean_val_acc = np.mean([r["val_accuracy"] for r in fold_results])
+    std_val_acc = np.std([r["val_accuracy"] for r in fold_results])
+    
+    print(f"\n{'─'*40}")
+    print(f"K-FOLD AGGREGATE [{ablation_mode.upper()}]:")
+    print(f"  Thresholds: {[f'{t:.4f}' for t in fold_thresholds]}")
+    print(f"  Median Threshold: {median_threshold:.6f}")
+    print(f"  Val Accuracy: {mean_val_acc:.2%} ± {std_val_acc:.2%}")
+    print(f"{'─'*40}")
+    
+    # Build final calibration
+    final_calibration = CalibrationResult(optimal_threshold=median_threshold)
+    for score, label in zip(all_scores, all_labels):
+        final_calibration.max_velocities.append(score)
+        final_calibration.labels.append(label)
+    final_calibration.compute_optimal_threshold()
+    final_calibration.optimal_threshold = median_threshold
+    
+    # Save
+    checkpoint_path = paths["checkpoints"] / f"ablation_{ablation_mode}_kfold_calibration.json"
+    save_checkpoint(final_calibration, checkpoint_path, config_name)
+    
+    # Save K-fold details
+    kfold_path = paths["checkpoints"] / f"ablation_{ablation_mode}_kfold_results.json"
+    with open(kfold_path, 'w') as f:
+        json.dump({
+            "ablation_mode": ablation_mode,
+            "fold_results": fold_results,
+            "median_threshold": median_threshold,
+            "mean_val_accuracy": mean_val_acc,
+        }, f, indent=2)
+    print(f"\n✓ Saved K-fold results to {kfold_path}")
+    
+    return final_calibration, fold_results
 
 
 def run_calibration(
@@ -2075,7 +2283,6 @@ def main():
         # ABLATION PROTOCOL: Highest priority when --ablation is set
         # =========================================================
         if args.ablation:
-            print(f"\n➡ ABLATION MODE: {args.ablation.upper()}")
             ablation_mode = args.ablation
             
             # Handle LTC/combined: enable LTC at model level
@@ -2084,15 +2291,34 @@ def main():
                     print("  ⚠ Note: LTC requires model reinitialization with use_ltc=True")
                     print("    For best results, restart with: --use-ltc --ablation ", ablation_mode)
             
-            calibration = run_ablation_calibration(
-                wrapper=wrapper,
-                loader=loader,
-                novel_states=novel_data,
-                paths=paths,
-                args=args,
-                config_name=config_name,
-                ablation_mode=ablation_mode,
-            )
+            if args.improvise:
+                # ABLATION + K-FOLD: Robust threshold via cross-validation
+                print(f"\n➡ ABLATION + K-FOLD MODE: {ablation_mode.upper()}")
+                print("  • Computing ablation scores for all examples (once)")
+                print("  • Then performing 4-fold cross-validation")
+                
+                calibration, fold_results = run_ablation_kfold_calibration(
+                    wrapper=wrapper,
+                    loader=loader,
+                    novel_states=novel_data,
+                    paths=paths,
+                    args=args,
+                    config_name=config_name,
+                    ablation_mode=ablation_mode,
+                )
+            else:
+                # Standard ablation (no K-fold)
+                print(f"\n➡ ABLATION MODE: {ablation_mode.upper()}")
+                
+                calibration = run_ablation_calibration(
+                    wrapper=wrapper,
+                    loader=loader,
+                    novel_states=novel_data,
+                    paths=paths,
+                    args=args,
+                    config_name=config_name,
+                    ablation_mode=ablation_mode,
+                )
         
         elif args.adapt and args.improvise:
             # TTT + K-fold: Compute scores once, cross-validate threshold
