@@ -239,6 +239,11 @@ Examples:
         "--folds", type=int, default=4,
         help="Number of folds for K-fold cross-validation (default: 4)"
     )
+    parser.add_argument(
+        "--multi-scale-agg", type=str, default="max", dest="multi_scale_agg",
+        choices=["max", "min", "mean"],
+        help="Aggregation method for multi-scale velocity in combined mode (default: max)"
+    )
     
     return parser.parse_args()
 
@@ -1477,8 +1482,16 @@ def run_ablation_calibration(
                             )
                         velocities.append(v)
                     
-                    # Use MAX velocity (peak contradiction signal)
-                    score = max(velocities)
+                    # Aggregate velocities based on user choice
+                    agg_method = args.multi_scale_agg if hasattr(args, 'multi_scale_agg') else 'max'
+                    if agg_method == 'max':
+                        score = max(velocities)
+                    elif agg_method == 'min':
+                        score = min(velocities)
+                    elif agg_method == 'mean':
+                        score = sum(velocities) / len(velocities)
+                    else:
+                        score = max(velocities)  # Fallback
                 else:
                     # Fallback: Single state (no checkpoints)
                     novel_state = novel_state_list if not isinstance(novel_state_list, list) else novel_state_list[-1]
@@ -1666,7 +1679,17 @@ def run_ablation_kfold_calibration(
                                 backstory_state, checkpoint_state, metric="cosine"
                             )
                         velocities.append(v)
-                    score = max(velocities)
+                    
+                    # Aggregate velocities based on user choice
+                    agg_method = args.multi_scale_agg if hasattr(args, 'multi_scale_agg') else 'max'
+                    if agg_method == 'max':
+                        score = max(velocities)
+                    elif agg_method == 'min':
+                        score = min(velocities)
+                    elif agg_method == 'mean':
+                        score = sum(velocities) / len(velocities)
+                    else:
+                        score = max(velocities)  # Fallback
                 else:
                     novel_state = novel_state_list if not isinstance(novel_state_list, list) else novel_state_list[-1]
                     if novel_state is None:

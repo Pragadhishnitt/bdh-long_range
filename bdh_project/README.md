@@ -171,7 +171,7 @@ python main.py --adapt --improvise --adapt-steps 4 --adapt-lr 5e-5 --ppl-chunks 
 | **Baseline** | `--ablation baseline` | Control (standard flow) | Velocity (↓=consistent) |
 | **RCP** | `--ablation rcp` | ~~Deprecated~~ (broken metric) | N/A |
 | **LTC** | `--ablation ltc` | Fixes memory decay | Velocity (↓=consistent) |
-| **Combined** | `--ablation combined` | All enhancements | Max Velocity (↓=consistent) |
+| **Combined** | `--ablation combined` | All enhancements | Agg Velocity (↓=consistent) |
 
 **Quick Start**:
 ```bash
@@ -184,6 +184,11 @@ python main.py --ablation ltc --small
 # Combined (LTC + Masking + Multi-Scale) - RECOMMENDED
 python main.py --ablation combined --small
 
+# Try different multi-scale aggregations
+python main.py --ablation combined --improvise --multi-scale-agg max
+python main.py --ablation combined --improvise --multi-scale-agg min
+python main.py --ablation combined --improvise --multi-scale-agg mean
+
 # With K-fold cross-validation for robust thresholds
 python main.py --ablation ltc --improvise --small
 python main.py --ablation combined --improvise --small
@@ -193,7 +198,7 @@ python main.py --ablation combined --improvise --small
 > **How Ablation Modes Work**:
 > - **Baseline**: Standard Backstory→Novel velocity (control)
 > - **LTC (Liquid Time Constants)**: Replaces fixed λ=0.99 damping with adaptive λ_t = σ(W·x_t + b). High-surprise inputs trigger stronger retention.
-> - **Combined (RECOMMENDED)**: LTC + **Monosemantic Masking** (focuses on relevant neurons) + **Multi-Scale Velocity** (computes velocity at 25%, 50%, 75%, 100% novel checkpoints, uses max for peak contradiction detection).
+> - **Combined (RECOMMENDED)**: LTC + **Monosemantic Masking** (focuses on relevant neurons) + **Multi-Scale Velocity** (computes velocity at 25%, 50%, 75%, 100% novel checkpoints). Use `--multi-scale-agg` to choose aggregation: `max` (peak contradiction), `min` (minimum distance), or `mean` (average).
 
 
 ---
