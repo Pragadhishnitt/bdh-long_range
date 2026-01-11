@@ -991,16 +991,21 @@ class BDHReasoningWrapper:
         novel_state: Optional[RecurrentState] = None,
         max_probe_chunks: Optional[int] = None,
         verbose: bool = False,
+        use_velocity: bool = True,
     ) -> float:
         """
         RCP Full Flow: Prime with Novel → Freeze → Probe with Backstory.
         
-        IMPROVED METRIC: Delta Perplexity
-        Score = PPL(Backstory|Empty) - PPL(Backstory|Novel)
+        METRIC OPTIONS:
+        1. Velocity-based (default, recommended):
+           Score = Velocity_Reduction = (V_base - V_primed) / V_base
+           - Measures how much the novel context "stabilizes" the state
+           - Higher score = More consistent (less state perturbation)
         
-        - Positive Score: Novel context HELPED predict backstory (Consistent)
-        - Negative Score: Novel context HURT prediction (Contradict/Surprise)
-        - Near Zero: Novel context irrelevant
+        2. Perplexity-based (legacy):
+           Score = Relative Delta PPL = (PPL_base - PPL_primed) / PPL_base
+           - Measures language modeling improvement
+           - Often fails because it captures style, not facts
         
         Args:
             backstory_text: Character backstory
@@ -1008,43 +1013,86 @@ class BDHReasoningWrapper:
             novel_state: Pre-computed novel state (if cached)
             max_probe_chunks: Limit backstory chunks for probing
             verbose: Show progress
+            use_velocity: If True, use velocity metric; if False, use perplexity
             
         Returns:
-            delta_perplexity: Improvement in perplexity due to priming
+            score: RCP consistency score (higher = more consistent)
         """
-        # Phase 1: Get Baseline Perplexity (Intrinsic difficulty of backstory)
-        # We use an empty state to measure how hard the backstory is to predict on its own
-        empty_state = self.model.reset_state()
-        inv_ppl_baseline = self.probe_with_backstory(
-            backstory_text,
-            empty_state,
-            max_chunks=max_probe_chunks,
-            verbose=False,
-        )
-        ppl_baseline = 1.0 / inv_ppl_baseline if inv_ppl_baseline > 0 else 1000.0
+        if use_velocity:
+            # =====================================================
+            # VELOCITY-BASED RCP (RECOMMENDED)
+            # =====================================================
+            # Hypothesis: Consistent backstories cause LESS state
+            # perturbation when the model is primed with the novel
+            
+            # Phase 1: Baseline velocity (no priming)
+            empty_state = self.model.reset_state()
+            backstory_state_baseline, _ = self.prime_with_backstory(
+                backstory_text, verbose=False
+            )
+            velocity_baseline = self.compute_velocity_from_states(
+                empty_state, backstory_state_baseline, metric="cosine"
+            )
+            
+            # Phase 2: Primed velocity (with novel context)
+            if novel_state is None:
+                primed_state, _ = self.prime_with_novel(novel_path, verbose=verbose)
+            else:
+                primed_state = novel_state.clone()
+                primed_state.detach()
+            
+            backstory_state_primed, _ = self.prime_with_backstory(
+                backstory_text, verbose=False
+            )
+            velocity_primed = self.compute_velocity_from_states(
+                primed_state, backstory_state_primed, metric="cosine"
+            )
+            
+            # Velocity Reduction: How much did priming stabilize the state?
+            # Positive = Priming reduced state shift (Consistent)
+            # Negative = Priming increased state shift (Contradict)
+            if velocity_baseline > 0:
+                velocity_reduction = (velocity_baseline - velocity_primed) / velocity_baseline
+            else:
+                velocity_reduction = 0.0
+            
+            return float(velocity_reduction)
         
-        # Phase 2: Get Primed Perplexity (Difficulty given novel context)
-        if novel_state is None:
-            primed_state, _ = self.prime_with_novel(novel_path, verbose=verbose)
         else:
-            primed_state = novel_state.clone()
-            primed_state.detach()
-        
-        inv_ppl_primed = self.probe_with_backstory(
-            backstory_text,
-            primed_state,
-            max_chunks=max_probe_chunks,
-            verbose=verbose,
-        )
-        ppl_primed = 1.0 / inv_ppl_primed if inv_ppl_primed > 0 else 1000.0
-        
-        # Relative Delta Perplexity: Percentage improvement
-        # Normalizes for intrinsic difficulty of the text
-        # Score = (Base - Primed) / Base
-        if ppl_baseline > 0:
-            relative_delta = (ppl_baseline - ppl_primed) / ppl_baseline
-        else:
-            relative_delta = 0.0
-        
-        return float(relative_delta)
+            # =====================================================
+            # PERPLEXITY-BASED RCP (LEGACY, NOT RECOMMENDED)
+            # =====================================================
+            # Phase 1: Baseline Perplexity
+            empty_state = self.model.reset_state()
+            inv_ppl_baseline = self.probe_with_backstory(
+                backstory_text,
+                empty_state,
+                max_chunks=max_probe_chunks,
+                verbose=False,
+            )
+            ppl_baseline = 1.0 / inv_ppl_baseline if inv_ppl_baseline > 0 else 1000.0
+            
+            # Phase 2: Primed Perplexity
+            if novel_state is None:
+                primed_state, _ = self.prime_with_novel(novel_path, verbose=verbose)
+            else:
+                primed_state = novel_state.clone()
+                primed_state.detach()
+            
+            inv_ppl_primed = self.probe_with_backstory(
+                backstory_text,
+                primed_state,
+                max_chunks=max_probe_chunks,
+                verbose=verbose,
+            )
+            ppl_primed = 1.0 / inv_ppl_primed if inv_ppl_primed > 0 else 1000.0
+            
+            # Relative Delta Perplexity
+            if ppl_baseline > 0:
+                relative_delta = (ppl_baseline - ppl_primed) / ppl_baseline
+            else:
+                relative_delta = 0.0
+            
+            return float(relative_delta)
+
 

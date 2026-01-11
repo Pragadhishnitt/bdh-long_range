@@ -1371,9 +1371,9 @@ def run_ablation_calibration(
     # Mode-specific descriptions
     mode_info = {
         "baseline": "Standard Backstory→Novel streaming (velocity-based)",
-        "rcp": "Reverse Contextual Priming: Novel→Backstory (relative delta ppl)",
+        "rcp": "Reverse Contextual Priming: Novel→Backstory (velocity reduction)",
         "ltc": "Liquid Time Constants: Adaptive damping (velocity-based)",
-        "combined": "RCP + LTC + Monosemantic Masking (relative delta ppl)",
+        "combined": "RCP + LTC + Monosemantic Masking (velocity reduction)",
     }
     print(f"  Mode: {mode_info.get(ablation_mode, ablation_mode)}")
     
@@ -1473,7 +1473,7 @@ def run_ablation_calibration(
     
     print(f"\n{'─'*40}")
     print(f"ABLATION [{ablation_mode.upper()}] RESULTS:")
-    print(f"  Metric: {'Relative Delta PPL (↑=consistent)' if is_inverse_metric else 'Velocity (↓=consistent)'}")
+    print(f"  Metric: {'Velocity Reduction (↑=consistent)' if is_inverse_metric else 'Velocity (↓=consistent)'}")
     print(f"  Optimal threshold: {calibration.optimal_threshold:.6f}")
     print(f"  Accuracy: {calibration.train_accuracy:.2%}")
     print(f"  F1 Score: {calibration.f1:.4f}")
@@ -1527,9 +1527,9 @@ def run_ablation_kfold_calibration(
     
     mode_info = {
         "baseline": "Standard Backstory→Novel streaming (velocity-based)",
-        "rcp": "Reverse Contextual Priming: Novel→Backstory (relative delta ppl)",
+        "rcp": "Reverse Contextual Priming: Novel→Backstory (velocity reduction)",
         "ltc": "Liquid Time Constants: Adaptive damping (velocity-based)",
-        "combined": "RCP + LTC + Monosemantic Masking (relative delta ppl)",
+        "combined": "RCP + LTC + Monosemantic Masking (velocity reduction)",
     }
     print(f"  Mode: {mode_info.get(ablation_mode, ablation_mode)}")
     print(f"  Folds: {n_folds}")
@@ -2043,6 +2043,26 @@ def run_inference(
     print(f"  Total predictions: {len(results_df)}")
     print(f"  Consistent (1): {(results_df['prediction'] == 1).sum()}")
     print(f"  Contradict (0): {(results_df['prediction'] == 0).sum()}")
+    
+    # Confusion Matrix (if ground truth available)
+    if 'label' in results_df.columns:
+        from sklearn.metrics import confusion_matrix, classification_report
+        y_true = results_df['label'].values
+        y_pred = results_df['prediction'].values
+        
+        cm = confusion_matrix(y_true, y_pred)
+        tn, fp, fn, tp = cm.ravel()
+        
+        print(f"\n  CONFUSION MATRIX:")
+        print(f"                 Predicted")
+        print(f"               0 (Con)  1 (Cons)")
+        print(f"  Actual  0    {tn:5d}    {fp:5d}")
+        print(f"          1    {fn:5d}    {tp:5d}")
+        print(f"\n  Accuracy: {(tp + tn) / len(y_true):.2%}")
+        print(f"  Precision: {tp / (tp + fp) if (tp + fp) > 0 else 0:.2%}")
+        print(f"  Recall: {tp / (tp + fn) if (tp + fn) > 0 else 0:.2%}")
+        print(f"  F1 Score: {2 * tp / (2 * tp + fp + fn) if (2 * tp + fp + fn) > 0 else 0:.4f}")
+    
     print(f"{'─'*40}")
     
     return results_df
