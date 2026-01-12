@@ -2,9 +2,8 @@
 
 **Project-Specific Documentation**
 
-> **Main README**: See [`../README.md`](../README.md) for installation and quick start instructions.
->
-> **Research Report**: See [`research_report.md`](research_report.md) for detailed methodology and ablation study.
+> **Main README**: See [`../README.md`](../../README.md) for installation and quick start instructions.
+
 
 This directory contains the core implementation of the BDH narrative consistency classifier.
 
