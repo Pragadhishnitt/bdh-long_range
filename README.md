@@ -301,7 +301,7 @@ This is a competition submission. For questions or issues, please open a GitHub 
 ## 📞 Contact
 
 - **GitHub**: [Pragadhishnitt/bdh-long_range](https://github.com/Pragadhishnitt/bdh-long_range)
-- **Competition**: Track B - Narrative Consistency Classification
+- **Competition**: KDSC-Track B - Narrative Consistency Classification
 
 ---
 
