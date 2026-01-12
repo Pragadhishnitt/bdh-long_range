@@ -1378,11 +1378,12 @@ def run_ablation_calibration(
     print("="*60)
     
     # Mode-specific descriptions
+    agg_method = args.multi_scale_agg if hasattr(args, 'multi_scale_agg') else 'max'
     mode_info = {
         "baseline": "Standard Backstory→Novel streaming (velocity-based)",
         "rcp": "[DEPRECATED] Reverse Contextual Priming (broken metric)",
         "ltc": "Liquid Time Constants: Adaptive damping (velocity-based)",
-        "combined": "LTC + Masking + Multi-Scale Velocity (max across checkpoints)",
+        "combined": f"LTC + Masking + Multi-Scale Velocity ({agg_method} aggregation)",
     }
     print(f"  Mode: {mode_info.get(ablation_mode, ablation_mode)}")
     
@@ -1590,11 +1591,12 @@ def run_ablation_kfold_calibration(
     print(f"ABLATION K-FOLD CROSS-VALIDATION: {ablation_mode.upper()}")
     print("="*60)
     
+    agg_method = args.multi_scale_agg if hasattr(args, 'multi_scale_agg') else 'max'
     mode_info = {
         "baseline": "Standard Backstory→Novel streaming (velocity-based)",
         "rcp": "[DEPRECATED] Reverse Contextual Priming (broken metric)",
         "ltc": "Liquid Time Constants: Adaptive damping (velocity-based)",
-        "combined": "LTC + Masking + Multi-Scale Velocity (max across checkpoints)",
+        "combined": f"LTC + Masking + Multi-Scale Velocity ({agg_method} aggregation)",
     }
     print(f"  Mode: {mode_info.get(ablation_mode, ablation_mode)}")
     print(f"  Folds: {n_folds}")
