@@ -8,7 +8,7 @@
 
 This repository implements a **Baby Dragon Hatchling (BDH)** recurrent architecture with Hebbian memory for detecting narrative inconsistencies in long novels (100K+ tokens). Our approach achieves competitive accuracy using stateful ρ-matrix accumulation and monosemantic masking.
 
-> **Research Report**: See (https://drive.google.com/file/d/1Esifrc_6KT_1xzRtRDmuAJcb1uoHPeue/view?usp=sharing)) for detailed methodology and ablation study.
+> **Research Report**: See [Research Report](https://drive.google.com/file/d/1Esifrc_6KT_1xzRtRDmuAJcb1uoHPeue/view?usp=sharing) for detailed methodology and ablation study.
 
 ---
 
